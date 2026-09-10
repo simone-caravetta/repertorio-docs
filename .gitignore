@@ -21,3 +21,10 @@ data/catalog.sqlite3.lock
 
 # Claude Code: configurazione locale della macchina
 .claude/settings.local.json
+
+# GitNexus: l'indice del codice e i file che riscrive a ogni analisi.
+# Sono strumenti della macchina, non parte del progetto: restano in locale.
+.gitnexus/
+AGENTS.md
+CLAUDE.md
+.claude/skills/gitnexus-*/
