@@ -22,6 +22,10 @@ them.
 - **Vector store.** Pinecone or a local store (LanceDB, Chroma, sqlite-vec). A local store
   makes the whole app one folder you can copy, removes an API key and works offline.
   Switching later means re-embedding the entire corpus, so it is worth deciding early.
+- **Embedding model.** It defines the vector space the whole corpus lives in, so it is a
+  decision at corpus level rather than a preference: changing it means re-indexing
+  everything, and two models with the same dimension are still not compatible. Pick a model
+  known to work, record it with the index, and treat it as an invariant.
 - **Text coordinates at ingest.** Highlighting a cited passage requires word positions in
   the page, which `PyPDFLoader` does not provide. Capturing them with PyMuPDF also
   improves chunking (keeping tables intact, splitting on headings), so it pays twice.
@@ -46,7 +50,41 @@ A document has to be an entity before it can be listed, categorised or managed.
 - [ ] Tests, linting and CI — the sync and ingestion code is exactly the kind that breaks
       silently.
 
-## Phase 2 — Categories and scoped search
+## Phase 2 — Model providers
+
+The chat model should be free to swap. The embedding model is an invariant of the index and
+gets curated, because a wrong chat model gives one bad answer while a wrong embedding model
+gives quietly wrong search results over the whole corpus.
+
+- [ ] Chat model as any OpenAI-compatible endpoint, configured with `base_url`, model and
+      key, so DeepSeek, a local vLLM/Ollama server or a hosted provider can be swapped
+      without touching the graph. Provider-specific parameters (`extra_body`) live in the
+      profile, not in the code.
+- [ ] Embeddings from a curated list instead of free choice: a few known-good models, each
+      with its declared dimension and a measured result on the sample corpus.
+- [ ] Embedding configuration as two separate fields: the curated model id, and the way it
+      is served (`local` in-process, or `api` against an OpenAI-compatible endpoint). The
+      same model served either way produces the same vectors, so changing the delivery mode
+      needs no reindex.
+- [ ] Fingerprint the index: embed a fixed probe string when the index is created, store
+      the resulting vector, and re-check it at startup. Compare with a tolerance rather
+      than for equality, so the same model in a different build (a quantised server versus
+      the local one) is not flagged, while a genuinely different model is. On a mismatch,
+      refuse to search and offer the reindex instead of answering from vectors that cannot
+      be compared.
+- [ ] Include the embedding model in the collection name, so changing model creates a new
+      index instead of corrupting the existing one, and rolling back is just pointing at
+      the previous one.
+- [ ] Assign models per node: a small local model for `contextualize` and for grading, the
+      strong model only for the answer.
+- [ ] Declare the capabilities of each profile (tool calling, structured output) and
+      degrade gracefully where they are missing.
+- [ ] Health check per profile, with a clear message when a local server is not running.
+- [ ] Record which model produced each conversation.
+- [ ] An escape hatch for anything else: a `custom` profile that accepts any endpoint
+      behind an explicit warning and a full reindex.
+
+## Phase 3 — Categories and scoped search
 
 - [ ] Derive the category from the folder layout at ingest, stored as chunk metadata.
 - [ ] Category tree in the catalog, and the operation to move a document between categories
@@ -55,7 +93,7 @@ A document has to be an entity before it can be listed, categorised or managed.
 - [ ] Scoped chat: by category, by document, by selection of documents.
 - [ ] Skip retrieval entirely when the scoped document fits in the context window.
 
-## Phase 3 — The application
+## Phase 4 — The application
 
 - [ ] FastAPI with SSE streaming for tokens and sources.
 - [ ] Catalog view: documents grouped by category, each with title, description and status.
@@ -71,7 +109,7 @@ A document has to be an entity before it can be listed, categorised or managed.
 - [ ] Summarise older turns once the history outgrows its budget.
 - [ ] `interrupt()` when retrieval is weak, to ask which document was meant.
 
-## Phase 4 — Smart ingestion
+## Phase 5 — Smart ingestion
 
 - [ ] LLM-generated title and description at ingest, sampled across the document rather
       than only its beginning, and editable by hand.
@@ -83,9 +121,10 @@ A document has to be an entity before it can be listed, categorised or managed.
       pages for a VLM fallback.
 - [ ] Additional formats: DOCX, Markdown, HTML, TXT.
 
-## Phase 5 — Retrieval quality
+## Phase 6 — Retrieval quality
 
-Start with the harness: without a measurement, everything below is guesswork.
+Start with the harness: without a measurement, everything below is guesswork. It doubles as
+the tool that tells whether a local model is good enough for a given node.
 
 - [ ] Eval harness: questions with their expected source, measuring retrieval hit-rate and
       answer faithfulness.
@@ -99,7 +138,7 @@ Start with the harness: without a measurement, everything below is guesswork.
       model.
 - [ ] Multi-query expansion with reciprocal rank fusion.
 
-## Phase 6 — The reader and the knowledge layer
+## Phase 7 — The reader and the knowledge layer
 
 - [ ] Highlight cited passages inside the page.
 - [ ] Chat anchored to the visible page rather than the whole document.
@@ -109,7 +148,7 @@ Start with the harness: without a measurement, everything below is guesswork.
 - [ ] Reading position and progress.
 - [ ] Related documents, from the embedding centroid.
 
-## Phase 7 — Tools
+## Phase 8 — Tools
 
 Deterministic actions first: a button that extracts deadlines should extract deadlines, not
 start an agent.
@@ -124,7 +163,7 @@ start an agent.
 
 ## Later
 
-- [ ] Local LLM through Ollama, for a fully offline setup.
+- [ ] A fully offline setup: local vector store, local embedding server, local chat model.
 - [ ] Multi-machine access.
 
 ## Non-goals
