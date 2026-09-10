@@ -107,8 +107,6 @@ needs no API keys and no network:
 python -m scripts.sync --dry-run
 ```
 
-`python -m scripts.ingest` still works and does the same thing.
-
 ### 5. Chat
 
 ```bash
