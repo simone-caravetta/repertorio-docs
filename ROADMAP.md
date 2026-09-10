@@ -6,7 +6,9 @@ can browse, a reader you can ask questions from, and tools that organise the doc
 you.
 
 The phases are ordered by dependency, not by appeal. Each one leaves the project in a
-usable state.
+usable state, and they alternate on purpose: everything whose failure is loud and
+measurable is built headless and driven from the console, and the interface comes in when
+the failure would otherwise be silent.
 
 ## Decide before building
 
@@ -33,9 +35,10 @@ them.
 - **Deletion semantics.** Hard delete, or a trash state that hides a document from
   retrieval but keeps it recoverable. Costs almost nothing to design in now.
 
-## Phase 1 — Document lifecycle
+## Phase 1 — Documents become entities
 
-A document has to be an entity before it can be listed, categorised or managed.
+Today a PDF is a file that happens to have been indexed. This phase gives it an id, a
+status and a history — everything that listing, categorising and managing depend on.
 
 - [ ] Catalog database (SQLite): id, path, title, description, category, file hash, status,
       page and chunk counts, timestamps.
@@ -50,11 +53,11 @@ A document has to be an entity before it can be listed, categorised or managed.
 - [ ] Tests, linting and CI — the sync and ingestion code is exactly the kind that breaks
       silently.
 
-## Phase 2 — Model providers
+## Phase 2 — Models you can swap
 
-The chat model should be free to swap. The embedding model is an invariant of the index and
-gets curated, because a wrong chat model gives one bad answer while a wrong embedding model
-gives quietly wrong search results over the whole corpus.
+The chat model is free to swap; the embedding model gets curated, because a wrong chat
+model gives one bad answer while a wrong embedding model gives quietly wrong search results
+over the whole corpus.
 
 - [ ] Chat model as any OpenAI-compatible endpoint, configured with `base_url`, model and
       key, so DeepSeek, a local vLLM/Ollama server or a hosted provider can be swapped
@@ -84,7 +87,10 @@ gives quietly wrong search results over the whole corpus.
 - [ ] An escape hatch for anything else: a `custom` profile that accepts any endpoint
       behind an explicit warning and a full reindex.
 
-## Phase 3 — Categories and scoped search
+## Phase 3 — Categories and scope
+
+Categories are metadata, not storage: moving a document between them should never mean
+re-embedding it.
 
 - [ ] Derive the category from the folder layout at ingest, stored as chunk metadata.
 - [ ] Category tree in the catalog, and the operation to move a document between categories
@@ -93,23 +99,20 @@ gives quietly wrong search results over the whole corpus.
 - [ ] Scoped chat: by category, by document, by selection of documents.
 - [ ] Skip retrieval entirely when the scoped document fits in the context window.
 
-## Phase 4 — The application
+## Phase 4 — Out of the console
+
+The core works; now it needs a face. The smallest slice that makes the library usable: you
+open it, see your documents, and ask questions.
 
 - [ ] FastAPI with SSE streaming for tokens and sources.
 - [ ] Catalog view: documents grouped by category, each with title, description and status.
-- [ ] Document detail: description, metadata, related documents, actions.
-- [ ] PDF viewer with citation → page jump.
 - [ ] Chat panel with a scope selector.
-- [ ] Inbox: recently ingested documents waiting for confirmation of the proposed category
-      and tags.
 - [ ] Persistent checkpointer (SQLite) so conversations survive a restart — the same
       mechanism gives conversation time travel through `get_state_history`.
 - [ ] Stream the sources as soon as retrieval completes, instead of at the end of the
       answer.
-- [ ] Summarise older turns once the history outgrows its budget.
-- [ ] `interrupt()` when retrieval is weak, to ask which document was meant.
 
-## Phase 5 — Smart ingestion
+## Phase 5 — Ingestion that organises
 
 - [ ] LLM-generated title and description at ingest, sampled across the document rather
       than only its beginning, and editable by hand.
@@ -121,10 +124,10 @@ gives quietly wrong search results over the whole corpus.
       pages for a VLM fallback.
 - [ ] Additional formats: DOCX, Markdown, HTML, TXT.
 
-## Phase 6 — Retrieval quality
+## Phase 6 — Retrieval you can measure
 
-Start with the harness: without a measurement, everything below is guesswork. It doubles as
-the tool that tells whether a local model is good enough for a given node.
+Start with the harness: without a measurement, the rest of this phase is guesswork. It
+doubles as the tool that tells whether a local model is good enough for a given node.
 
 - [ ] Eval harness: questions with their expected source, measuring retrieval hit-rate and
       answer faithfulness.
@@ -138,12 +141,11 @@ the tool that tells whether a local model is good enough for a given node.
       model.
 - [ ] Multi-query expansion with reciprocal rank fusion.
 
-## Phase 7 — Knowledge graph
+## Phase 7 — Relations beyond similarity
 
-Relations between parts of a document are not something the orchestration graph can hold:
-LangGraph decides where to search, not what is known. This phase adds the layer that does,
-in three tiers — cheapest first, and the expensive one only if the measurement justifies
-it.
+A graph of control flow decides where to search, not what is known. This phase adds the
+layer that holds what is known, in three tiers — cheapest first, and the expensive one only
+if the measurement justifies it.
 
 - [ ] Structure graph, deterministic, from PyMuPDF: headings → sections → subsections →
       pages, and which table or figure belongs to which section. No LLM and nothing to
@@ -169,7 +171,20 @@ it.
       edges to bring in what similarity alone would miss.
 - [ ] Always fall back to plain vector search when the graph has nothing.
 
-## Phase 8 — The reader and personal notes
+## Phase 8 — Opening the document
+
+The catalog gets you to the document; this is what happens once you open one.
+
+- [ ] Document detail: description, metadata and actions.
+- [ ] PDF viewer with citation → page jump.
+- [ ] Inbox: recently ingested documents waiting for confirmation of the proposed category
+      and tags.
+- [ ] Summarise older turns once the history outgrows its budget.
+- [ ] `interrupt()` when retrieval is weak, to ask which document was meant.
+
+## Phase 9 — A reader you can write in
+
+The viewer becomes a place to work in, not only to look at.
 
 - [ ] Highlight cited passages inside the page.
 - [ ] Chat anchored to the visible page rather than the whole document.
@@ -179,10 +194,10 @@ it.
 - [ ] Reading position and progress.
 - [ ] Related documents, from the embedding centroid.
 
-## Phase 9 — Tools
+## Phase 10 — Tools: buttons before agents
 
-Deterministic actions first: a button that extracts deadlines should extract deadlines, not
-start an agent.
+Everything here starts as a deterministic action. Only the last bullet needs an agent, and
+it is last on purpose.
 
 - [ ] Structured extraction: dates, amounts, key points — exportable as CSV or Markdown.
 - [ ] Deeper on-demand summary.
