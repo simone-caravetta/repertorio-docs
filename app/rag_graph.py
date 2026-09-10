@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
@@ -80,7 +79,7 @@ async def contextualize(state: RAGState) -> dict[str, Any]:
     messages = state["messages"]
     latest = messages[-1]
     if not isinstance(latest, HumanMessage):
-        raise ValueError("L'ultimo messaggio deve essere una domanda dell'utente.")
+        raise TypeError("L'ultimo messaggio deve essere una domanda dell'utente.")
 
     history = messages[:-1]
     history_text = "\n".join(

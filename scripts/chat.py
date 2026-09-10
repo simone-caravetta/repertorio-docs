@@ -76,7 +76,8 @@ async def run_chat() -> None:
                     print(f"  - {source.get('source')}{suffix}")
                 print()
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            # A failed question ends the question, not the console.
             print(f"\nError: {exc}\n")
 
 

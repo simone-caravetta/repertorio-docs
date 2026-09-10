@@ -4,10 +4,16 @@ __pycache__/
 .env
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 .DS_Store
 
 # I documenti indicizzati restano in locale: non vanno versionati.
 data/documents/**/*.pdf
+
+# Il catalogo è locale come i documenti che descrive.
+data/catalog.sqlite3
+data/catalog.sqlite3-journal
+data/catalog.sqlite3.lock
 
 # Optional local caches if configured inside the project
 .huggingface/

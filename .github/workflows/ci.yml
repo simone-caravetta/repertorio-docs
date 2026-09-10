@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # Installed first so pip does not resolve the multi-gigabyte CUDA build
+      # of torch, which nothing here uses.
+      - name: Install the CPU build of torch
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install the dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # The suite needs no API keys: it never opens Pinecone, DeepSeek or the
+      # embedding model.
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: python -m pytest -q

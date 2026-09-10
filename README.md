@@ -16,8 +16,9 @@ that streams the answer as it is generated.
   is instructed to say so instead of guessing.
 - **No external embedding service.** `BAAI/bge-m3` runs locally with Sentence
   Transformers, so your documents are not sent to a third party for indexing.
-- **Re-running ingestion is safe.** Chunk IDs are deterministic hashes of source, page
-  and content, so nothing gets duplicated.
+- **Keeping the library up to date is one command.** Drop a PDF in the folder and sync:
+  new files are indexed, edited ones are indexed again, deleted ones are removed from the
+  index. Re-running it changes nothing.
 
 ## How it works
 
@@ -84,18 +85,29 @@ data/documents/
 Subfolders are scanned recursively, and the relative path is stored as the document
 source, so it shows up in the citations.
 
-The PDFs must have a selectable text layer. Scanned documents without OCR do not expose
-any text to extract and are skipped.
+The PDFs must have a selectable text layer. A scanned document without a text layer never
+reaches the index; it is recorded as failed and retried on every sync until OCR arrives.
 
-### 4. Ingest
+### 4. Sync
 
 ```bash
-python -m scripts.ingest
+python -m scripts.sync
 ```
 
-This reads every PDF, splits the text into overlapping chunks, computes the embeddings
-locally and uploads chunk, page and source to Pinecone. The index is created
-automatically on the first run if it does not exist yet.
+This compares the folder with the catalog and the vector store, and applies the
+difference: new PDFs are read, split into overlapping chunks, embedded locally and
+uploaded to Pinecone; edited files are indexed again; files you deleted are removed from
+the index. Documents already up to date are left alone, so running it twice does nothing
+the second time. The Pinecone index is created on the first run if it does not exist yet.
+
+Add `--dry-run` to see what it would do without changing anything. It reads only, so it
+needs no API keys and no network:
+
+```bash
+python -m scripts.sync --dry-run
+```
+
+`python -m scripts.ingest` still works and does the same thing.
 
 ### 5. Chat
 
@@ -117,6 +129,29 @@ You: And for minors?
 Assistant: ...
 ```
 
+## Document lifecycle
+
+Every document has a row in a small SQLite catalog, `data/catalog.sqlite3`, created on the
+first sync. Its path — relative to `data/documents/` — is its identity, and the row keeps
+the title, the hash of the file, the page and chunk counts and the last error.
+
+The status says where the document stands:
+
+| Status | Meaning |
+|---|---|
+| `queued` | In the catalog, waiting to be read. |
+| `indexing` | Being read right now. |
+| `indexed` | Its chunks are in the vector store. |
+| `failed` | The last run could not read it. The reason is on the row, and the next sync tries again. |
+| `trashed` | The file is gone from the folder. Its chunks were removed, its metadata kept. |
+
+Trashing is a removal from the index, not a deletion from the catalog: put the file back
+where it was, run the sync again and the document is indexed again with its title intact.
+
+The catalog is the source of truth. Removing vectors by hand from the Pinecone console
+leaves the catalog describing a document that is no longer there; the next sync finds the
+file unchanged and skips it, so those vectors do not come back on their own.
+
 ## Configuration reference
 
 | Variable | Default | Description |
@@ -134,7 +169,8 @@ Assistant: ...
 | `CHUNK_SIZE` | `900` | Maximum chunk length, in characters. |
 | `CHUNK_OVERLAP` | `150` | Overlap between consecutive chunks. |
 | `RETRIEVAL_K` | `5` | Number of passages retrieved per question. |
-| `DOCUMENTS_DIR` | `data/documents` | Folder scanned by the ingestion. |
+| `DOCUMENTS_DIR` | `data/documents` | Folder holding the documents. |
+| `CATALOG_DB_PATH` | `data/catalog.sqlite3` | SQLite file holding the document catalog. |
 
 The Pinecone index is created with 1024 dimensions, matching `BAAI/bge-m3`. If you switch
 to an embedding model with a different output size, update `pinecone_dimension` in
@@ -143,10 +179,22 @@ to an embedding model with a different output size, update `pinecone_dimension` 
 ## Project layout
 
 ```text
-app/       the RAG itself: ingestion, embeddings, vector store, graph
-scripts/   command line entry points: ingest and chat
-data/      the PDFs to index (not versioned)
+app/       the RAG itself: catalog, ingestion, embeddings, vector store, graph
+scripts/   command line entry points: sync and chat
+data/      the PDFs to index and the catalog (not versioned)
+tests/     the offline test suite: no API keys, no network, no model download
 ```
+
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q
+ruff check .
+```
+
+The test suite is entirely offline: it needs no API keys, opens no connection and
+downloads no model. The same two commands run on every push in GitHub Actions.
 
 ## Roadmap
 

@@ -32,6 +32,9 @@ class Settings:
     documents_dir: Path = PROJECT_ROOT / os.getenv(
         "DOCUMENTS_DIR", "data/documents"
     )
+    catalog_db_path: Path = PROJECT_ROOT / os.getenv(
+        "CATALOG_DB_PATH", "data/catalog.sqlite3"
+    )
 
     @property
     def pinecone_dimension(self) -> int:

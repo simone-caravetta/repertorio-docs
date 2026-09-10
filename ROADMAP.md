@@ -39,17 +39,21 @@ them.
 A document needs an id, a status and a history before it can be listed, categorised or
 managed.
 
-- [ ] Catalog database (SQLite): id, path, title, description, category, file hash, status,
+- [x] Catalog database (SQLite): id, path, title, description, category, file hash, status,
       page and chunk counts, timestamps.
-- [ ] Delete by metadata filter on `source`.
-- [ ] Update as delete + re-add, triggered by comparing the file hash.
-- [ ] A `sync` command that reconciles filesystem, catalog and index: add, update, delete.
-- [ ] Per-document status (`queued`, `indexing`, `indexed`, `failed`, `needs_ocr`) shown
-      everywhere the document appears.
+- [x] Delete by metadata filter on `source`.
+- [x] Update as delete + re-add, triggered by comparing the file hash.
+- [x] A `sync` command that reconciles filesystem, catalog and index: add, update, delete.
+- [x] Per-document status (`queued`, `indexing`, `indexed`, `failed`, `needs_ocr`) shown
+      everywhere the document appears. (`needs_ocr` is reserved but never assigned until
+      OCR exists; a scanned PDF is `failed` for now. The only place a status appears today
+      is the catalog itself — there is no interface to show it in yet.)
 - [ ] Ingestion as a background job with a queue table and progress, so large documents and
-      OCR do not block.
-- [ ] Embedding cache (content hash → vector), so re-indexing is close to free.
-- [ ] Tests, linting and CI — the sync and ingestion code is exactly the kind that breaks
+      OCR do not block. (Deferred to Phase 5: it only pays off once OCR makes ingestion
+      slow.)
+- [ ] Embedding cache (content hash → vector), so re-indexing is close to free. (Deferred
+      to Phase 5, for the same reason.)
+- [x] Tests, linting and CI — the sync and ingestion code is exactly the kind that breaks
       silently.
 
 ## Phase 2 — Model providers
