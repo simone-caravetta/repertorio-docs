@@ -138,7 +138,38 @@ the tool that tells whether a local model is good enough for a given node.
       model.
 - [ ] Multi-query expansion with reciprocal rank fusion.
 
-## Phase 7 — The reader and the knowledge layer
+## Phase 7 — Knowledge graph
+
+Relations between parts of a document are not something the orchestration graph can hold:
+LangGraph decides where to search, not what is known. This phase adds the layer that does,
+in three tiers — cheapest first, and the expensive one only if the measurement justifies
+it.
+
+- [ ] Structure graph, deterministic, from PyMuPDF: headings → sections → subsections →
+      pages, and which table or figure belongs to which section. No LLM and nothing to
+      hallucinate, and it is what makes a section-scoped answer or "show me what surrounds
+      this passage" possible.
+- [ ] Reference graph: the explicit cross-references ("see section 4.2", "as described in
+      the annex", "cfr. art. 5"), extracted by pattern with an LLM fallback for the
+      ambiguous ones and stored as edges between parts of documents. Today a section
+      pointing at another section loses that link entirely.
+- [ ] Measure before the third tier: extend the eval harness with multi-hop and
+      corpus-wide questions, so the entity graph has to earn its cost instead of being
+      assumed to help.
+- [ ] Entity graph: entities and relations extracted into triples at ingest, each carrying
+      the chunk it came from, so no answer ever rests on a triple alone.
+- [ ] Entity resolution: merge the different surface forms of the same entity.
+- [ ] Community detection and per-community summaries, for the questions no single passage
+      contains.
+- [ ] Incremental maintenance: a changed document has its triples removed and re-extracted
+      — orphan triples are far harder to notice than orphan chunks.
+- [ ] Route by question type: a classify node sending lookups to plain vector search, and
+      relation or aggregate questions down the graph path.
+- [ ] Seed with vectors, expand on the graph: retrieve chunks first, then follow their
+      edges to bring in what similarity alone would miss.
+- [ ] Always fall back to plain vector search when the graph has nothing.
+
+## Phase 8 — The reader and personal notes
 
 - [ ] Highlight cited passages inside the page.
 - [ ] Chat anchored to the visible page rather than the whole document.
@@ -148,7 +179,7 @@ the tool that tells whether a local model is good enough for a given node.
 - [ ] Reading position and progress.
 - [ ] Related documents, from the embedding centroid.
 
-## Phase 8 — Tools
+## Phase 9 — Tools
 
 Deterministic actions first: a button that extracts deadlines should extract deadlines, not
 start an agent.
