@@ -5,10 +5,9 @@ about them from a console. Where it is going: a personal document library — a 
 can browse, a reader you can ask questions from, and tools that organise the documents for
 you.
 
-The phases are ordered by dependency, not by appeal. Each one leaves the project in a
-usable state, and they alternate on purpose: everything whose failure is loud and
-measurable is built headless and driven from the console, and the interface comes in when
-the failure would otherwise be silent.
+The phases are ordered by dependency, not by appeal, and each one leaves the project in a
+usable state. The interface is built in two steps, a first version at Phase 4 and the rest
+at Phase 8, because everything before it can be built and verified from the command line.
 
 ## Decide before building
 
@@ -35,10 +34,10 @@ them.
 - **Deletion semantics.** Hard delete, or a trash state that hides a document from
   retrieval but keeps it recoverable. Costs almost nothing to design in now.
 
-## Phase 1 — Documents become entities
+## Phase 1 — Document lifecycle
 
-Today a PDF is a file that happens to have been indexed. This phase gives it an id, a
-status and a history — everything that listing, categorising and managing depend on.
+A document needs an id, a status and a history before it can be listed, categorised or
+managed.
 
 - [ ] Catalog database (SQLite): id, path, title, description, category, file hash, status,
       page and chunk counts, timestamps.
@@ -53,11 +52,11 @@ status and a history — everything that listing, categorising and managing depe
 - [ ] Tests, linting and CI — the sync and ingestion code is exactly the kind that breaks
       silently.
 
-## Phase 2 — Models you can swap
+## Phase 2 — Model providers
 
 The chat model is free to swap; the embedding model gets curated, because a wrong chat
-model gives one bad answer while a wrong embedding model gives quietly wrong search results
-over the whole corpus.
+model produces one bad answer, while a wrong embedding model produces wrong results for the
+whole corpus.
 
 - [ ] Chat model as any OpenAI-compatible endpoint, configured with `base_url`, model and
       key, so DeepSeek, a local vLLM/Ollama server or a hosted provider can be swapped
@@ -87,7 +86,7 @@ over the whole corpus.
 - [ ] An escape hatch for anything else: a `custom` profile that accepts any endpoint
       behind an explicit warning and a full reindex.
 
-## Phase 3 — Categories and scope
+## Phase 3 — Categories and scoped search
 
 Categories are metadata, not storage: moving a document between them should never mean
 re-embedding it.
@@ -99,10 +98,10 @@ re-embedding it.
 - [ ] Scoped chat: by category, by document, by selection of documents.
 - [ ] Skip retrieval entirely when the scoped document fits in the context window.
 
-## Phase 4 — Out of the console
+## Phase 4 — The first web interface
 
-The core works; now it needs a face. The smallest slice that makes the library usable: you
-open it, see your documents, and ask questions.
+The first version of the interface: you open it, see your documents, and ask questions
+about them.
 
 - [ ] FastAPI with SSE streaming for tokens and sources.
 - [ ] Catalog view: documents grouped by category, each with title, description and status.
@@ -112,7 +111,7 @@ open it, see your documents, and ask questions.
 - [ ] Stream the sources as soon as retrieval completes, instead of at the end of the
       answer.
 
-## Phase 5 — Ingestion that organises
+## Phase 5 — Smart ingestion
 
 - [ ] LLM-generated title and description at ingest, sampled across the document rather
       than only its beginning, and editable by hand.
@@ -124,7 +123,7 @@ open it, see your documents, and ask questions.
       pages for a VLM fallback.
 - [ ] Additional formats: DOCX, Markdown, HTML, TXT.
 
-## Phase 6 — Retrieval you can measure
+## Phase 6 — Retrieval quality
 
 Start with the harness: without a measurement, the rest of this phase is guesswork. It
 doubles as the tool that tells whether a local model is good enough for a given node.
@@ -141,16 +140,16 @@ doubles as the tool that tells whether a local model is good enough for a given 
       model.
 - [ ] Multi-query expansion with reciprocal rank fusion.
 
-## Phase 7 — Relations beyond similarity
+## Phase 7 — Knowledge graph
 
-A graph of control flow decides where to search, not what is known. This phase adds the
-layer that holds what is known, in three tiers — cheapest first, and the expensive one only
-if the measurement justifies it.
+The orchestration graph decides where to search; it does not hold the relations between
+documents. This phase adds the layer that does, in three tiers, cheapest first — the most
+expensive one only if the measurements justify it.
 
 - [ ] Structure graph, deterministic, from PyMuPDF: headings → sections → subsections →
-      pages, and which table or figure belongs to which section. No LLM and nothing to
-      hallucinate, and it is what makes a section-scoped answer or "show me what surrounds
-      this passage" possible.
+      pages, and which table or figure belongs to which section. No LLM involved, so
+      nothing can be hallucinated, and it is what makes a section-scoped answer possible,
+      or a question about what surrounds a passage.
 - [ ] Reference graph: the explicit cross-references ("see section 4.2", "as described in
       the annex", "cfr. art. 5"), extracted by pattern with an LLM fallback for the
       ambiguous ones and stored as edges between parts of documents. Today a section
@@ -171,9 +170,10 @@ if the measurement justifies it.
       edges to bring in what similarity alone would miss.
 - [ ] Always fall back to plain vector search when the graph has nothing.
 
-## Phase 8 — Opening the document
+## Phase 8 — Document detail and viewer
 
-The catalog gets you to the document; this is what happens once you open one.
+Opening a document from the catalog: its page, its content, and the documents waiting to be
+confirmed.
 
 - [ ] Document detail: description, metadata and actions.
 - [ ] PDF viewer with citation → page jump.
@@ -182,9 +182,10 @@ The catalog gets you to the document; this is what happens once you open one.
 - [ ] Summarise older turns once the history outgrows its budget.
 - [ ] `interrupt()` when retrieval is weak, to ask which document was meant.
 
-## Phase 9 — A reader you can write in
+## Phase 9 — The reader and personal notes
 
-The viewer becomes a place to work in, not only to look at.
+Working with the document while reading it: highlights, notes and questions anchored to the
+page.
 
 - [ ] Highlight cited passages inside the page.
 - [ ] Chat anchored to the visible page rather than the whole document.
@@ -194,10 +195,10 @@ The viewer becomes a place to work in, not only to look at.
 - [ ] Reading position and progress.
 - [ ] Related documents, from the embedding centroid.
 
-## Phase 10 — Tools: buttons before agents
+## Phase 10 — Document tools
 
-Everything here starts as a deterministic action. Only the last bullet needs an agent, and
-it is last on purpose.
+Every tool starts as a deterministic action; the agent comes last, for the questions that
+genuinely need several steps.
 
 - [ ] Structured extraction: dates, amounts, key points — exportable as CSV or Markdown.
 - [ ] Deeper on-demand summary.
