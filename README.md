@@ -1,5 +1,8 @@
 # Repertorio Docs
 
+![Uploading ChatGPT Image Sep 10, 2026, 08_48_25 PM.png…]()
+
+
 Turn a folder of PDFs into a knowledge base you can question in plain language.
 
 Local embeddings, Pinecone as the vector store, LangGraph for conversation memory,
