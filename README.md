@@ -150,11 +150,7 @@ data/      the PDFs to index (not versioned)
 
 ## Roadmap
 
-- [ ] Add a web API and a UI — the compiled graph is already importable as
-      `from app.rag_graph import app`.
-- [ ] Replace the in-memory conversation memory with a persistent checkpointer, so
-      history survives a restart.
-- [ ] Delete stale chunks when a document changes or is removed; today they stay in the
-      index and can still be retrieved.
-- [ ] Add an OCR step so scanned PDFs can be indexed too.
-- [ ] Add automated tests, linting and CI.
+The project is growing into a personal document library: a catalog you can browse, a reader
+you can ask questions from, and tools that organise the documents for you. The full plan —
+document lifecycle, categories, the catalog UI, OCR, retrieval quality and the reader —
+lives in [ROADMAP.md](ROADMAP.md).
