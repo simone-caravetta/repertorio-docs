@@ -1,6 +1,6 @@
 # Repertorio Docs
 
-![Uploading ChatGPT Image Sep 10, 2026, 08_48_25 PM.png…]()
+<img width="2172" height="724" alt="ChatGPT Image Sep 10, 2026, 08_48_25 PM" src="https://github.com/user-attachments/assets/f86fb6f5-59cf-4404-852c-8e7dc9993b1b" />
 
 
 Turn a folder of PDFs into a knowledge base you can question in plain language.
