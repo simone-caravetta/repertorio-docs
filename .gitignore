@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+
+# I documenti indicizzati restano in locale: non vanno versionati.
+data/documents/**/*.pdf
+
+# Optional local caches if configured inside the project
+.huggingface/
+.cache/
+
+# Claude Code: configurazione locale della macchina
+.claude/settings.local.json
