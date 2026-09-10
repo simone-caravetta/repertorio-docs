@@ -1,4 +1,4 @@
-# Conversational RAG
+# Repertorio Docs
 
 Turn a folder of PDFs into a knowledge base you can question in plain language.
 
@@ -104,8 +104,8 @@ python -m scripts.chat
 ```
 
 ```text
-Conversational RAG console
-Scrivi 'exit' per uscire.
+Repertorio Docs console
+Type 'exit' to quit.
 
 You: What are the requirements to access the service?
 Assistant: According to the documents ...
@@ -124,8 +124,8 @@ Assistant: ...
 | `DEEPSEEK_API_KEY` | — | **Required.** DeepSeek API key. |
 | `PINECONE_API_KEY` | — | **Required.** Pinecone API key. |
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | Model used to rewrite the question and write the answer. |
-| `PINECONE_INDEX_NAME` | `company-rag` | Name of the Pinecone index. Created if missing. |
-| `PINECONE_NAMESPACE` | `company-docs` | Namespace used inside the index. |
+| `PINECONE_INDEX_NAME` | `repertorio-docs` | Name of the Pinecone index. Created if missing. |
+| `PINECONE_NAMESPACE` | `documents` | Namespace used inside the index. |
 | `PINECONE_CLOUD` | `aws` | Cloud for the serverless index. |
 | `PINECONE_REGION` | `us-east-1` | Region for the serverless index. |
 | `EMBEDDING_MODEL` | `BAAI/bge-m3` | Sentence Transformers model, run locally. |

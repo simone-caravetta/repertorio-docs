@@ -16,8 +16,8 @@ class Settings:
     deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
     pinecone_api_key: str = os.getenv("PINECONE_API_KEY", "")
-    pinecone_index_name: str = os.getenv("PINECONE_INDEX_NAME", "company-rag")
-    pinecone_namespace: str = os.getenv("PINECONE_NAMESPACE", "company-docs")
+    pinecone_index_name: str = os.getenv("PINECONE_INDEX_NAME", "repertorio-docs")
+    pinecone_namespace: str = os.getenv("PINECONE_NAMESPACE", "documents")
     pinecone_cloud: str = os.getenv("PINECONE_CLOUD", "aws")
     pinecone_region: str = os.getenv("PINECONE_REGION", "us-east-1")
 

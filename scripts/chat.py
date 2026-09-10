@@ -10,7 +10,7 @@ async def run_chat() -> None:
     thread_id = f"console-{uuid4()}"
     config = {"configurable": {"thread_id": thread_id}}
 
-    print("Conversational RAG console")
+    print("Repertorio Docs console")
     print("Type 'exit' to quit.\n")
 
     while True:
