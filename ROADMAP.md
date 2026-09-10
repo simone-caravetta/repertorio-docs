@@ -197,8 +197,7 @@ page.
 
 ## Phase 10 — Document tools
 
-Every tool starts as a deterministic action; the agent comes last, for the questions that
-genuinely need several steps.
+Every tool starts as a deterministic action.
 
 - [ ] Structured extraction: dates, amounts, key points — exportable as CSV or Markdown.
 - [ ] Deeper on-demand summary.
