@@ -33,21 +33,21 @@ llm = ChatDeepSeek(
 contextualize_prompt = ChatPromptTemplate.from_messages([
     (
         "system",
-        """Sei un assistente che prepara query per la ricerca documentale aziendale.
+        """You prepare the search query for a document retrieval system.
 
-Considera la cronologia della conversazione e la nuova domanda dell'utente.
-Riscrivi la nuova domanda come una domanda autonoma, risolvendo riferimenti
-come 'questo', 'quello', 'e per l'estero?', 'quanto costa?' quando il contesto
-precedente permette di capirli.
+Given the previous conversation and the user's new question, rewrite that
+question so it stands on its own: resolve references like "this", "that one",
+"and abroad?", "how much?" using what was said before, so the query can be
+understood without the conversation.
 
-Non rispondere alla domanda. Restituisci esclusivamente la query autonoma.""",
+Do not answer the question. Return only the standalone query.""",
     ),
     (
         "human",
-        """Conversazione precedente:
+        """Previous conversation:
 {history}
 
-Nuova domanda:
+New question:
 {question}""",
     ),
 ])
@@ -57,19 +57,21 @@ contextualize_chain = contextualize_prompt | llm | StrOutputParser()
 answer_prompt = ChatPromptTemplate.from_messages([
     (
         "system",
-        """Sei un assistente per la ricerca di informazioni aziendali.
+        """You answer questions about a collection of documents.
 
-Rispondi alla domanda usando esclusivamente il contesto documentale fornito.
-Se il contesto non contiene informazioni sufficienti, dichiaralo chiaramente.
-Non inventare policy, numeri, procedure o fatti non presenti nei documenti.
-Rispondi in italiano in modo chiaro e diretto.""",
+Use only the context provided below. If it does not hold enough information to
+answer, say so clearly instead of guessing, and do not fill the gaps from your
+own knowledge. Never invent facts, figures, names, procedures or rules that are
+not in the context.
+
+Answer in the language the question is written in, clearly and directly.""",
     ),
     (
         "human",
-        """Domanda:
+        """Question:
 {question}
 
-Contesto documentale:
+Context:
 {context}""",
     ),
 ])
@@ -79,7 +81,7 @@ async def contextualize(state: RAGState) -> dict[str, Any]:
     messages = state["messages"]
     latest = messages[-1]
     if not isinstance(latest, HumanMessage):
-        raise TypeError("L'ultimo messaggio deve essere una domanda dell'utente.")
+        raise TypeError("The last message must be a question from the user.")
 
     history = messages[:-1]
     history_text = "\n".join(
@@ -87,7 +89,7 @@ async def contextualize(state: RAGState) -> dict[str, Any]:
     )
 
     question = await contextualize_chain.ainvoke({
-        "history": history_text or "(nessuna conversazione precedente)",
+        "history": history_text or "(no previous conversation)",
         "question": latest.content,
     })
 
@@ -107,9 +109,9 @@ async def retrieve(state: RAGState) -> dict[str, Any]:
         if isinstance(page, int):
             page = page + 1
 
-        label = f"Fonte: {source}"
+        label = f"Source: {source}"
         if page is not None:
-            label += f" | Pagina: {page}"
+            label += f" | Page: {page}"
 
         context_parts.append(f"[{label}]\n{doc.page_content}")
         source_rows.append({
