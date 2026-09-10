@@ -44,6 +44,9 @@ managed.
 - [x] Delete by metadata filter on `source`.
 - [x] Update as delete + re-add, triggered by comparing the file hash.
 - [x] A `sync` command that reconciles filesystem, catalog and index: add, update, delete.
+- [x] Delete a document from the index and the catalog, as a command of its own: the sync
+      only trashes, and the trash is emptied on request. The file is a separate, opt-in
+      step, so that a delete does not quietly become a way to lose documents.
 - [x] Per-document status (`queued`, `indexing`, `indexed`, `failed`, `needs_ocr`) shown
       everywhere the document appears. (`needs_ocr` is reserved but never assigned until
       OCR exists; a scanned PDF is `failed` for now. The only place a status appears today

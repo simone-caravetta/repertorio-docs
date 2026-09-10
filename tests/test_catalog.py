@@ -122,6 +122,21 @@ def test_trash_keeps_the_metadata(catalog: Catalog) -> None:
     )
 
 
+def test_delete_takes_the_metadata_with_it(catalog: Catalog) -> None:
+    catalog.add_file("a.pdf", "A Document")
+    catalog.record_indexed("a.pdf", file_hash="abc", page_count=3, chunk_count=7)
+
+    catalog.delete("a.pdf")
+
+    assert catalog.get("a.pdf") is None
+    assert catalog.all() == []
+
+
+def test_deleting_an_unknown_document_raises(catalog: Catalog) -> None:
+    with pytest.raises(KeyError, match="No such document"):
+        catalog.delete("ghost.pdf")
+
+
 def test_all_is_ordered_by_path(catalog: Catalog) -> None:
     for path in ("z.pdf", "a/b.pdf", "m.pdf"):
         catalog.add_file(path, Path(path).stem)

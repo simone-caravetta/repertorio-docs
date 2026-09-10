@@ -194,3 +194,12 @@ class Catalog:
             (path,),
             path,
         )
+
+    def delete(self, path: str) -> None:
+        """Remove the row, metadata included.
+
+        The row is what a trashed document keeps to come back with: its title,
+        its counts and its history. Once the row is gone there is nothing left
+        to restore, and the document starts over as a new one.
+        """
+        self._write("DELETE FROM documents WHERE path = ?", (path,), path)

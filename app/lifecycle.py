@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -23,6 +24,17 @@ class SyncReport:
     trashed: list[str] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DeleteReport:
+    deleted: list[str] = field(default_factory=list)
+    files_removed: list[str] = field(default_factory=list)
+    # Deleted from the index and the catalog, with the file still in the
+    # documents folder: the next sync indexes it again as a new document.
+    file_present: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+    failed: list[tuple[str, str]] = field(default_factory=list)
 
 
 def delete_document_vectors(source: str, vectorstore: VectorStore) -> None:
@@ -150,5 +162,87 @@ def sync_documents(
     for source in report.trashed:
         delete_document_vectors(source, vectorstore)
         catalog.trash(source)
+
+    return report
+
+
+def trashed_paths(db_path: Path) -> list[str]:
+    """Every document currently in the trash, in path order.
+
+    Reads the catalog without creating it: a library that was never synced has
+    an empty trash, not a missing one.
+    """
+    return [
+        record.path
+        for record in Catalog(db_path, create=False).all()
+        if record.status == "trashed"
+    ]
+
+
+def delete_documents(
+    documents_dir: Path,
+    db_path: Path,
+    vectorstore: VectorStore | None,
+    paths: Iterable[str],
+    *,
+    remove_files: bool = False,
+    dry_run: bool = False,
+) -> DeleteReport:
+    """Remove documents from the vector store and from the catalog.
+
+    This is the end of the line for a document: the row goes with the chunks, so
+    nothing is left to restore and a document that comes back comes back as a
+    new one. Trashing stays the reversible half of the same idea — the way to
+    take a document out of the answers without losing it.
+
+    The order is the one the trash path uses: chunks first, then the row. The
+    two interruptions are not equally bad. With the chunks gone and the row
+    still there, the next sync notices and repairs it; with the row deleted
+    first, the chunks are left in the index and nothing refers to them any more.
+
+    Deleting a document whose file is still in the folder is a legitimate way to
+    start it over, but it does not hold: the folder is what the sync watches,
+    and a file the catalog does not know is indexed as a new document. Those
+    paths are reported in `file_present`; `remove_files` deletes the file too,
+    which is what makes the removal final.
+    """
+    if not dry_run and vectorstore is None:
+        raise ValueError("A vector store is required to apply the changes")
+
+    documents_dir = Path(documents_dir)
+    catalog = Catalog(db_path, create=not dry_run)
+    report = DeleteReport()
+
+    for source in sorted(set(paths)):
+        if catalog.get(source) is None:
+            # The catalog decides what exists: a path it does not hold was
+            # never indexed, or has already been removed.
+            report.missing.append(source)
+            continue
+
+        path = documents_dir / source
+        present = path.is_file()
+
+        if not dry_run:
+            try:
+                delete_document_vectors(source, vectorstore)
+                catalog.delete(source)
+            except Exception as exc:  # noqa: BLE001
+                # One document must not stop the rest, the same rule the sync
+                # follows.
+                report.failed.append((source, str(exc) or exc.__class__.__name__))
+                continue
+
+            if remove_files and present:
+                path.unlink()
+
+        report.deleted.append(source)
+
+        if remove_files and present:
+            report.files_removed.append(source)
+        elif present and path.suffix.lower() in SUPPORTED_EXTENSIONS:
+            # The scan in `sync_documents` looks for exactly this: a file it can
+            # still see is a document it will index again from scratch.
+            report.file_present.append(source)
 
     return report

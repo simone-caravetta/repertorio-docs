@@ -76,13 +76,15 @@ class FakeVectorStore:
 
     It records the only two calls the library ever makes on a store: adding
     chunks, and deleting by metadata filter. Sources listed in `fail_on` raise
-    on add, which is how the tests drive a failed ingest.
+    on add, and sources listed in `fail_delete_on` raise on delete: that is how
+    the tests drive a failed ingest and a failed removal.
     """
 
     added: list[tuple[list[Document], list[str]]] = field(default_factory=list)
     deleted: list[dict[str, object] | None] = field(default_factory=list)
     events: list[tuple[str, object]] = field(default_factory=list)
     fail_on: set[str] = field(default_factory=set)
+    fail_delete_on: set[str] = field(default_factory=set)
 
     def add_documents(
         self, documents: list[Document], **kwargs: object
@@ -98,8 +100,13 @@ class FakeVectorStore:
         return ids
 
     def delete(self, ids: list[str] | None = None, **kwargs: object) -> bool:
-        self.deleted.append(kwargs.get("filter"))  # type: ignore[arg-type]
-        self.events.append(("delete", kwargs.get("filter")))
+        criteria = kwargs.get("filter")
+        source = criteria.get("source") if isinstance(criteria, dict) else None
+        if source in self.fail_delete_on:
+            raise RuntimeError(f"refused to delete {source}")
+
+        self.deleted.append(criteria)  # type: ignore[arg-type]
+        self.events.append(("delete", criteria))
         return True
 
     @property

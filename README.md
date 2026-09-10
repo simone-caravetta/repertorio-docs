@@ -149,6 +149,28 @@ The status says where the document stands:
 Trashing is a removal from the index, not a deletion from the catalog: put the file back
 where it was, run the sync again and the document is indexed again with its title intact.
 
+### Deleting a document
+
+The sync trashes a document on its own, from what it finds in the folder. Deleting is a
+decision, so it is a command:
+
+```bash
+python -m scripts.delete manuals/manual.pdf    # one or more documents
+python -m scripts.delete --trashed             # empty the trash
+python -m scripts.delete --dry-run manuals/manual.pdf
+```
+
+It removes the chunks from the index and the row from the catalog. Nothing is kept, so a
+document that comes back starts over as a new one: the title, the counts and the history go
+with the row. Trashing stays the reversible half — it is how you take a document out of the
+answers without losing it.
+
+The file is a separate question, and the command leaves it where it is. When the file is
+still in the folder it says so, because the next sync sees a file the catalog does not know
+and indexes it again from scratch. That is a fair way to start a document over — after
+changing how documents are split, or to recover a row that went wrong — but it is not a
+deletion. Add `--with-file` when the file should go too: that is the version that holds.
+
 The catalog is the source of truth. Removing vectors by hand from the Pinecone console
 leaves the catalog describing a document that is no longer there; the next sync finds the
 file unchanged and skips it, so those vectors do not come back on their own.
@@ -181,7 +203,7 @@ to an embedding model with a different output size, update `pinecone_dimension` 
 
 ```text
 app/       the RAG itself: catalog, ingestion, embeddings, vector store, graph
-scripts/   command line entry points: sync and chat
+scripts/   command line entry points: sync, delete and chat
 data/      the PDFs to index and the catalog (not versioned)
 tests/     the offline test suite: no API keys, no network, no model download
 ```
