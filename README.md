@@ -69,6 +69,37 @@ It removes the document from the index and from the catalog, so there is nothing
 bring back. The file stays where it is unless you add `--with-file`: without it, the next
 sync finds the file again and indexes it from scratch.
 
+## Categories and scoped search
+
+Documents are filed by the folder they sit in: a PDF in `data/documents/manuali/` belongs to
+the category `manuali`, and one at the root of the folder belongs to none. The folder decides
+this once, when the document is first indexed; after that the catalog is the authority, so a
+document filed somewhere else stays there.
+
+```bash
+python -m scripts.catalog                          # the categories, with their counts
+python -m scripts.catalog --documents              # ... and the documents under each
+python -m scripts.catalog move manuals/a.pdf --to archive
+```
+
+Moving a document is a catalog write: nothing is indexed again, and the file does not have to
+move. The other side of that is that reorganising the folders on disk does not recategorise
+what has already been indexed — a file moved to another folder is a document the catalog does
+not know, and the next sync indexes it as a new one.
+
+A question can be asked of a category, of one document, or of a few:
+
+```bash
+python -m scripts.chat --category manuals          # this category and what is filed below it
+python -m scripts.chat --document manuals/a.pdf    # one document
+python -m scripts.chat --documents manuals/a.pdf reports/b.pdf
+```
+
+The console prints the scope it is on before the first question. A single document small
+enough to fit the model's context is read whole rather than by similarity, in reading order,
+so nothing in it is left out by ranking; `WHOLE_DOCUMENT_MAX_CHARS` sets the budget (24000 by
+default, 0 to always search by similarity).
+
 ## Models
 
 The defaults are DeepSeek for the answers and `BAAI/bge-m3` on your machine for the

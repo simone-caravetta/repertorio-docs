@@ -170,9 +170,16 @@ def build_graph(
 
 @lru_cache(maxsize=1)
 def get_app() -> CompiledStateGraph:
-    """The graph the console runs on, built once per process, on first use."""
+    """The graph over the whole library, built once per process, on first use.
+
+    A console that was given a scope builds its own graph instead: the state of a
+    conversation lives in the checkpointer of the graph that ran it.
+    """
     return build_graph(chat_model=build_chat_model())
 
 
-def get_thread_state(config: dict[str, Any]):
-    return get_app().get_state(config)
+def get_thread_state(
+    config: dict[str, Any], graph: CompiledStateGraph | None = None
+):
+    """What the conversation has produced so far, on the graph that ran it."""
+    return (graph or get_app()).get_state(config)

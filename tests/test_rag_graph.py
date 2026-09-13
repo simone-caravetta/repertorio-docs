@@ -18,6 +18,8 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
 from app.rag_graph import build_graph, format_context
+from app.vectorstore import WholeDocumentRetriever
+from tests.helpers import FakeVectorStore
 
 THREAD = {"configurable": {"thread_id": "test-thread"}}
 
@@ -169,3 +171,40 @@ async def test_the_last_message_must_be_a_question():
         await graph.ainvoke(
             {"messages": [AIMessage(content="I am the assistant")]}, config=THREAD
         )
+
+
+@pytest.mark.asyncio
+async def test_a_scoped_retriever_is_all_a_scoped_answer_takes():
+    """How the console asks about one document: a different retriever, same graph.
+
+    `WholeDocumentRetriever` is a `BaseRetriever` rather than a `VectorStore` one,
+    which is the point — the graph asks any retriever for documents and does not
+    care which kind it is holding.
+    """
+    store = FakeVectorStore()
+    store.added.append((
+        [
+            Document(
+                page_content="The thing is explained here.",
+                metadata={"source": "manuals/manual.pdf", "page": 0, "chunk_id": 0},
+            ),
+            Document(
+                page_content="Something else entirely.",
+                metadata={"source": "reports/report.pdf", "page": 0, "chunk_id": 0},
+            ),
+        ],
+        ["0", "1"],
+    ))
+    graph = build_graph(
+        chat_model=FakeChatModel(replies=["a standalone question", "the answer"]),
+        retriever=WholeDocumentRetriever(
+            store=store, source="manuals/manual.pdf", k=1
+        ),
+    )
+
+    state = await ask(graph, "what does it say?")
+
+    assert state["retrieved_documents"] == [
+        {"source": "manuals/manual.pdf", "page": 1}
+    ]
+    assert "Something else entirely." not in state["context"]

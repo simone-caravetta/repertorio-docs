@@ -51,6 +51,37 @@ def test_new_files_are_indexed(
     assert sorted(set(store.sources)) == [MANUAL, REPORT]
 
 
+def test_a_new_file_is_filed_under_the_folder_it_sits_in(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    run(documents_dir, db_path, store)
+
+    catalog = Catalog(db_path)
+
+    assert catalog.get(MANUAL).category == "manuals"
+    assert catalog.get(REPORT).category == "reports"
+
+
+def test_a_re_index_leaves_a_moved_document_where_it_was_moved(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    """The folder files a document once. After that the catalog is the authority.
+
+    Without this the next sync would put every document moved by hand back where
+    its folder says it is, which would make the move a thing that lasts until the
+    next sync rather than a thing that is stored.
+    """
+    run(documents_dir, db_path, store)
+    catalog = Catalog(db_path)
+    catalog.set_category(MANUAL, "archive")
+
+    edit(documents_dir, MANUAL, SENTENCE * 30)
+    report = run(documents_dir, db_path, store)
+
+    assert report.updated == [MANUAL]
+    assert catalog.get(MANUAL).category == "archive"
+
+
 def test_unchanged_files_are_left_alone(
     documents_dir: Path, db_path: Path, store: FakeVectorStore
 ) -> None:

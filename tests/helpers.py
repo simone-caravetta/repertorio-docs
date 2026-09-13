@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from langchain_core.documents import Document
+from langchain_core.vectorstores import VectorStore
 
 from app.config import Settings
 
@@ -40,6 +41,11 @@ def make_settings(**overrides: object) -> Settings:
         # whoever runs it.
         "documents_dir": Path("/tmp/repertorio-docs-test/documents"),
         "catalog_db_path": Path("/tmp/repertorio-docs-test/catalog.sqlite3"),
+        # A scope is resolved against these two, so a test that pins neither
+        # would decide differently on a machine with a different `.env`.
+        "chunk_size": 200,
+        "retrieval_k": 5,
+        "whole_document_max_chars": 24000,
     }
     values.update(overrides)
     return Settings(**values)  # type: ignore[arg-type]
@@ -104,18 +110,28 @@ def make_pdf(path: Path, text: str) -> Path:
 
 
 @dataclass
-class FakeVectorStore:
+class FakeVectorStore(VectorStore):
     """Stands in for the Pinecone store.
 
-    It records the only two calls the library ever makes on a store: adding
-    chunks, and deleting by metadata filter. Sources listed in `fail_on` raise
+    It records the three calls the library ever makes on a store: adding chunks,
+    deleting by metadata filter, and searching. Sources listed in `fail_on` raise
     on add, and sources listed in `fail_delete_on` raise on delete: that is how
     the tests drive a failed ingest and a failed removal.
+
+    It really is a `VectorStore`, because some of the code under test takes one as
+    a pydantic field (`WholeDocumentRetriever.store`) and pydantic checks the type
+    rather than trusting the annotation. Inheriting also buys the real
+    `as_retriever`, so a test can search through the wiring the console uses
+    instead of through a stand-in for it.
     """
 
     added: list[tuple[list[Document], list[str]]] = field(default_factory=list)
     deleted: list[dict[str, object] | None] = field(default_factory=list)
     events: list[tuple[str, object]] = field(default_factory=list)
+    # Every search, as it was asked: the query, the k, and the filter.
+    searches: list[tuple[str, int, dict[str, object] | None]] = field(
+        default_factory=list
+    )
     fail_on: set[str] = field(default_factory=set)
     fail_delete_on: set[str] = field(default_factory=set)
 
@@ -141,6 +157,46 @@ class FakeVectorStore:
         self.deleted.append(criteria)  # type: ignore[arg-type]
         self.events.append(("delete", criteria))
         return True
+
+    def similarity_search(
+        self, query: str, k: int = 4, **kwargs: object
+    ) -> list[Document]:
+        """The chunks on record that match the filter, in reverse order.
+
+        Reverse on purpose: a similarity search ranks by a question, so the order
+        it hands back is not the order the document reads in, and a caller that
+        wants reading order has to put it back. `k` is recorded rather than
+        applied — the fake holds a handful of chunks, and what a test wants to
+        know is what was asked for.
+        """
+        criteria = kwargs.get("filter")
+        self.searches.append((query, k, criteria))  # type: ignore[arg-type]
+
+        found = [
+            document
+            for documents, _ in self.added
+            for document in documents
+            if self._matches(document, criteria)
+        ]
+        return list(reversed(found))
+
+    @classmethod
+    def from_texts(cls, *args: object, **kwargs: object) -> None:
+        """Abstract on the base class, and never reached: a test builds the fake
+        by hand, holding whatever chunks the case is about."""
+        raise NotImplementedError
+
+    @staticmethod
+    def _matches(
+        document: Document, criteria: dict[str, object] | None
+    ) -> bool:
+        if criteria is None:
+            return True
+
+        source = criteria.get("source")
+        if isinstance(source, dict):  # the {"$in": [...]} a scope builds
+            return document.metadata.get("source") in (source.get("$in") or [])
+        return document.metadata.get("source") == source
 
     @property
     def sources(self) -> list[str]:

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from langchain_core.vectorstores import VectorStore
 
-from app.catalog import Catalog
+from app.catalog import Catalog, category_from_path
 from app.ingestion import SUPPORTED_EXTENSIONS, compute_file_hash, ingest_one
 
 # A row in one of these states is not the result of a completed run: either the
@@ -150,7 +150,14 @@ def sync_documents(
         )
 
     for source in report.added:
-        catalog.add_file(source, title=Path(source).stem)
+        # The folder names the category once, here, when the row is created. From
+        # then on the catalog owns it, so a document moved by hand stays where it
+        # was moved to even after a re-index.
+        catalog.add_file(
+            source,
+            title=Path(source).stem,
+            category=category_from_path(source),
+        )
         index(source)
 
     for source in report.restored:

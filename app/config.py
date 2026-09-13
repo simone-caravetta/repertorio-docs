@@ -59,6 +59,13 @@ class Settings:
     chunk_size: int = int(os.getenv("CHUNK_SIZE", "900"))
     chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", "150"))
     retrieval_k: int = int(os.getenv("RETRIEVAL_K", "5"))
+    # A scope that is one document is read whole rather than by top-k, when its
+    # text is estimated to fit in this many characters: every chunk is handed to
+    # the model and nothing is dropped by similarity. Set it to 0 to always
+    # search by similarity, however small the document.
+    whole_document_max_chars: int = int(
+        os.getenv("WHOLE_DOCUMENT_MAX_CHARS", "24000")
+    )
 
     documents_dir: Path = PROJECT_ROOT / os.getenv(
         "DOCUMENTS_DIR", "data/documents"

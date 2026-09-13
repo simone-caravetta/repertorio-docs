@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from functools import lru_cache
+from typing import Any
 
-from langchain_core.vectorstores import VectorStore
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.documents import Document
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.vectorstores import VectorStore, VectorStoreRetriever
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
 
@@ -133,10 +138,76 @@ def get_vectorstore() -> VectorStore:
     )
 
 
-@lru_cache(maxsize=1)
-def get_retriever():
-    """Keep vector store and retriever conceptually decoupled."""
+def build_retriever(
+    *,
+    k: int | None = None,
+    sources: Sequence[str] | None = None,
+) -> VectorStoreRetriever:
+    """A retriever over the configured store, optionally narrowed to documents.
+
+    `sources=None` searches the whole library, which is what every command did
+    before there was a way to narrow it. A sequence becomes the one filter shape
+    both stores answer: `$in` over `source`, the per-document key the chunks
+    already carry and that the lifecycle already deletes by. What is deliberately
+    not offered is a general `filter=` dictionary: the two stores do not spell
+    filters the same way — `app.chroma_store` refuses to translate between them
+    for deletion, and the same caution applies to searching — so one shape, tested
+    on both, beats a passthrough that nothing checks.
+
+    Not cached, unlike `get_retriever`: the arguments are the cache key, and the
+    store underneath is already cached, so a retriever costs nothing worth
+    keeping.
+    """
+    search_kwargs: dict[str, Any] = {
+        "k": settings.retrieval_k if k is None else k
+    }
+    if sources is not None:
+        search_kwargs["filter"] = {"source": {"$in": list(sources)}}
+
     return get_vectorstore().as_retriever(
         search_type="similarity",
-        search_kwargs={"k": settings.retrieval_k},
+        search_kwargs=search_kwargs,
     )
+
+
+class WholeDocumentRetriever(BaseRetriever):
+    """Every chunk of one document, in reading order.
+
+    A document that fits in the context window is served better by all of it than
+    by the handful of passages a similarity search returns: the question may be
+    about something the top k never reaches. The text lives in the vector store
+    and nowhere else, so this is still a search — one that asks for all of it.
+    `k` is the document's chunk count, which the catalog knows exactly.
+
+    The chunks come back ranked by similarity and are put back into reading order
+    here, because a document handed over as a pile of shuffled pages reads as
+    one.
+    """
+
+    store: VectorStore
+    source: str
+    k: int
+
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+    ) -> list[Document]:
+        chunks = self.store.similarity_search(
+            query, k=self.k, filter={"source": self.source}
+        )
+        return sorted(chunks, key=_position)
+
+
+def _position(chunk: Document) -> tuple[int, int]:
+    """Where a chunk sits in its document: page first, then position on it."""
+    page = chunk.metadata.get("page")
+    index = chunk.metadata.get("chunk_id")
+    return (
+        page if isinstance(page, int) else 0,
+        index if isinstance(index, int) else 0,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_retriever() -> VectorStoreRetriever:
+    """The retriever the graph falls back on: the whole library, top k."""
+    return build_retriever()

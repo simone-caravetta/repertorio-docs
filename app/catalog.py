@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # The state a document can be in. `needs_ocr` is not assigned yet: a PDF with no
 # text layer is currently recorded as `failed` with "No text extracted".
@@ -41,6 +41,35 @@ CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
 """
 
 
+def category_from_path(path: str) -> str | None:
+    """The folder a document sits in, as the category it is filed under.
+
+    This is the only place the folder layout is read. A document is filed under
+    its folder at the moment its row is created, and the catalog owns the value
+    from then on: reading the folder again on every sync would undo every move
+    made by hand, and would make the filesystem and the catalog two authorities
+    for one fact.
+    """
+    parent = PurePosixPath(path).parent
+    return None if parent == PurePosixPath(".") else str(parent)
+
+
+def normalise_category(name: str | None) -> str | None:
+    """The category as it is stored, from whatever was typed on a command line.
+
+    None and the empty string both mean "no category", which is where a document
+    at the root of the documents folder sits.
+    """
+    if name is None:
+        return None
+
+    cleaned = name.strip().strip("/").strip()
+    if not cleaned or cleaned == ".":
+        return None
+
+    return str(PurePosixPath(cleaned))
+
+
 @dataclass(frozen=True)
 class DocumentRecord:
     id: int
@@ -60,6 +89,63 @@ class DocumentRecord:
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> DocumentRecord:
         return cls(**{field.name: row[field.name] for field in fields(cls)})
+
+
+@dataclass(frozen=True)
+class CategoryBranch:
+    """One category, with the ones filed beneath it."""
+
+    name: str
+    documents: int
+    total: int
+    children: tuple[CategoryBranch, ...]
+
+
+def build_category_tree(
+    counts: Iterable[tuple[str | None, int]],
+) -> tuple[CategoryBranch, ...]:
+    """Nest the category counts into the tree their names already describe.
+
+    A category is a folder path, so the tree is in the names themselves and
+    there is no second table to keep in step. A category holding no document of
+    its own still appears when something is filed below it, because dropping it
+    would lose the level that says where the documents sit. `total` counts a
+    category and everything under it, which is what a scope on it would search.
+
+    Documents with no category are not a branch: they sit at the root, and the
+    caller shows them apart from the tree.
+    """
+    direct: dict[str, int] = {}
+    for category, count in counts:
+        if category:
+            direct[category] = direct.get(category, 0) + count
+
+    names = {
+        "/".join(parts[:depth])
+        for name in direct
+        for parts in [name.split("/")]
+        for depth in range(1, len(parts) + 1)
+    }
+
+    def children_of(name: str | None) -> list[str]:
+        prefix = f"{name}/" if name else ""
+        return sorted(
+            child
+            for child in names
+            if child.startswith(prefix) and "/" not in child[len(prefix) :]
+        )
+
+    def branch(name: str) -> CategoryBranch:
+        children = tuple(branch(child) for child in children_of(name))
+        own = direct.get(name, 0)
+        return CategoryBranch(
+            name=name,
+            documents=own,
+            total=own + sum(child.total for child in children),
+            children=children,
+        )
+
+    return tuple(branch(name) for name in children_of(None))
 
 
 class Catalog:
@@ -128,16 +214,81 @@ class Catalog:
         rows = self._read("SELECT * FROM documents ORDER BY path")
         return [DocumentRecord.from_row(row) for row in rows]
 
-    def add_file(self, path: str, title: str) -> None:
-        """Record a new document as `queued`. Raises ValueError if already there."""
+    def add_file(
+        self, path: str, title: str, category: str | None = None
+    ) -> None:
+        """Record a new document as `queued`. Raises ValueError if already there.
+
+        `category` is written here and nowhere else. This is the row's creation,
+        so it is the one moment the folder is allowed to say where the document
+        is filed; every later write leaves the column alone. See
+        `category_from_path`.
+        """
         try:
             self._write(
-                "INSERT INTO documents (path, title) VALUES (?, ?)",
-                (path, title),
+                "INSERT INTO documents (path, title, category) VALUES (?, ?, ?)",
+                (path, title, category),
                 path,
             )
         except sqlite3.IntegrityError as exc:
             raise ValueError(f"Already in the catalog: {path}") from exc
+
+    def set_category(self, path: str, category: str | None) -> None:
+        """File a document under a category, or at the root with None.
+
+        A catalog write and nothing else: the vectors are not touched, and the
+        folder the file sits in does not have to move, which is what keeps a
+        reorganisation from costing a re-index.
+        """
+        self._write(
+            """
+            UPDATE documents
+               SET category = ?, updated_at = datetime('now')
+             WHERE path = ?
+            """,
+            (category, path),
+            path,
+        )
+
+    def sources_in_category(
+        self, category: str | None, *, include_descendants: bool = True
+    ) -> list[str]:
+        """The indexed documents filed under a category, ordered by path.
+
+        Only `indexed` rows: a trashed or failed document has no vectors, so a
+        scope naming it would search less than it says it does. `None` means the
+        documents at the root, which are not a category above the others and so
+        do not take descendants with them.
+        """
+        rows = self._read(
+            "SELECT path, category FROM documents "
+            "WHERE status = 'indexed' ORDER BY path"
+        )
+
+        if category is None:
+            return [row["path"] for row in rows if row["category"] is None]
+
+        # Compared in Python rather than with a LIKE: a folder named `a_b` would
+        # match `axb` through the wildcard, and a scope is not a place to be
+        # approximately right.
+        prefix = f"{category}/"
+        return [
+            row["path"]
+            for row in rows
+            if row["category"] == category
+            or (
+                include_descendants
+                and (row["category"] or "").startswith(prefix)
+            )
+        ]
+
+    def category_counts(self) -> list[tuple[str | None, int]]:
+        """How many indexed documents each category holds, `None` for the root."""
+        rows = self._read(
+            "SELECT category, COUNT(*) AS n FROM documents "
+            "WHERE status = 'indexed' GROUP BY category ORDER BY category"
+        )
+        return [(row["category"], int(row["n"])) for row in rows]
 
     def set_status(self, path: str, status: str) -> None:
         self._write(

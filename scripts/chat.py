@@ -1,18 +1,60 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
+from pathlib import Path
 from uuid import uuid4
 
-from app.config import describe_vector_store, settings
-from app.rag_graph import get_app, get_thread_state
+from app.catalog import Catalog
+from app.chat_model import build_chat_model
+from app.config import describe_vector_store, settings, short_path
+from app.rag_graph import build_graph, get_thread_state
+from app.scope import Scope, resolve_scope
+from app.vectorstore import WholeDocumentRetriever, build_retriever, get_vectorstore
 
 
-async def run_chat() -> None:
+def build_scoped_graph(scope: Scope):
+    """The graph for a question asked of these documents, and nothing else.
+
+    A scope is a different retriever handed to the same graph, which is why the
+    graph itself is untouched by any of this. The whole-library retriever is
+    cached; a scoped one is built here and does not outlive the run.
+    """
+    if scope.whole_document and scope.sources and scope.chunks:
+        retriever = WholeDocumentRetriever(
+            store=get_vectorstore(),
+            source=scope.sources[0],
+            k=scope.chunks,
+        )
+    else:
+        retriever = build_retriever(sources=scope.sources)
+
+    return build_graph(chat_model=build_chat_model(), retriever=retriever)
+
+
+async def run_chat(
+    *,
+    category: str | None = None,
+    document: str | None = None,
+    documents: list[str] | None = None,
+    documents_dir: Path | None = None,
+    db_path: Path | None = None,
+) -> None:
+    documents_dir = Path(documents_dir or settings.documents_dir)
+    db_path = Path(db_path or settings.catalog_db_path)
+
     try:
-        graph = get_app()
-    except RuntimeError as exc:
-        # A key that is missing or a provider that is misspelled is a message to
-        # read, not a stack trace to work through.
+        scope = resolve_scope(
+            Catalog(db_path, create=False),
+            config=settings,
+            category=category,
+            document=document,
+            documents=documents or [],
+        )
+        graph = build_scoped_graph(scope)
+    except (LookupError, RuntimeError) as exc:
+        # A key that is missing, a category that is not there: a message to read,
+        # not a stack trace to work through.
         raise SystemExit(str(exc)) from exc
 
     thread_id = f"console-{uuid4()}"
@@ -21,8 +63,12 @@ async def run_chat() -> None:
     print("Repertorio Docs console")
     # The console reads the same `.env` as the sync, but saying which store it
     # ended up on costs a line and answers the first question a wrong answer
-    # raises.
+    # raises. Same for the scope: a question asked of three documents rather than
+    # the library answers differently, and the difference is not visible from the
+    # question.
     print(f"store: {describe_vector_store(settings)}")
+    print(f"catalog: {short_path(db_path)}")
+    print(f"scope: {scope.label}")
     print("Type 'exit' to quit.\n")
 
     while True:
@@ -69,7 +115,7 @@ async def run_chat() -> None:
 
             print("\n")
 
-            state = get_thread_state(config)
+            state = get_thread_state(config, graph)
             sources = state.values.get("retrieved_documents", [])
 
             if sources:
@@ -93,5 +139,74 @@ async def run_chat() -> None:
             print(f"\nError: {exc}\n")
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Ask questions about the library. Without a scope, the whole library "
+            "is searched; with one, only what it names."
+        )
+    )
+    parser.add_argument(
+        "--category",
+        metavar="NAME",
+        help="ask only about a category and what is filed below it; '' for the "
+        "documents in no category",
+    )
+    parser.add_argument(
+        "--document",
+        metavar="PATH",
+        help="ask only about one document, read whole when it is small enough",
+    )
+    parser.add_argument(
+        "--documents",
+        nargs="+",
+        metavar="PATH",
+        help="ask only about these documents, searched by similarity",
+    )
+    parser.add_argument(
+        "--documents-dir",
+        type=Path,
+        default=settings.documents_dir,
+        help="folder to watch (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=settings.catalog_db_path,
+        help="catalog database (default: %(default)s)",
+    )
+
+    args = parser.parse_args()
+
+    # `--documents` takes several values, so argparse cannot be asked to make
+    # these exclusive; said here instead.
+    given = [
+        name
+        for name, was_given in (
+            ("--category", args.category is not None),
+            ("--document", args.document is not None),
+            ("--documents", bool(args.documents)),
+        )
+        if was_given
+    ]
+    if len(given) > 1:
+        parser.error("give one of " + ", ".join(given) + ", not several")
+
+    return args
+
+
+def main() -> None:
+    args = parse_args()
+    asyncio.run(
+        run_chat(
+            category=args.category,
+            document=args.document,
+            documents=args.documents,
+            documents_dir=args.documents_dir,
+            db_path=args.db,
+        )
+    )
+
+
 if __name__ == "__main__":
-    asyncio.run(run_chat())
+    main()

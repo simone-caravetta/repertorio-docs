@@ -14,12 +14,15 @@ at Phase 8, because everything before it can be built and verified from the comm
 Cheap now, expensive later. These shape the data model, so everything else depends on
 them.
 
-- **Source of truth.** If categories are managed from the UI, the catalog is the authority
-  and the filesystem is storage. If they are managed by moving folders around, the
-  filesystem stays the authority. Every later decision follows from this one.
+- **Source of truth.** Settled by Phase 3: the catalog is the authority, and the filesystem
+  seeds it. A document is filed under the folder it sits in when its row is created, and no
+  later write touches the category — so a document moved by hand is not put back by the next
+  sync, and reorganising folders on disk does not recategorise what is already indexed.
 - **Document identity.** The catalog needs a stable id. Using the file path keeps it
-  simple, but renaming then has to be a managed operation that preserves the id, rather
-  than a filesystem event that breaks the catalog.
+  simple, and that is what the catalog is built on: the relative path is the key, and the
+  chunks carry it as `source`, which is what both stores filter and delete by. What is still
+  missing is a rename that preserves it, rather than a filesystem event that breaks the
+  catalog.
 - **Vector store.** Settled as a setting rather than a choice: `VECTOR_STORE` selects Pinecone
   or a local Chroma, and the app works with either. One line switches between them, and each
   store keeps its own catalog, so switching re-indexes into the new store rather than finding
@@ -124,12 +127,29 @@ produces wrong results for everything.
 Categories are metadata, not storage: moving a document between them should never mean
 re-embedding it.
 
-- [ ] Derive the category from the folder layout at ingest, stored as chunk metadata.
-- [ ] Category tree in the catalog, and the operation to move a document between categories
-      (metadata only, no re-embedding).
-- [ ] Turn the retriever into a factory that accepts `k` and a metadata filter.
-- [ ] Scoped chat: by category, by document, by selection of documents.
-- [ ] Skip retrieval entirely when the scoped document fits in the context window.
+- [x] Derive the category from the folder layout at ingest, and keep it in the catalog. The
+      folder seeds it once, when the document's row is created, and the catalog owns it from
+      then on, so a re-index never undoes a move.
+- [x] Category tree in the catalog, and the operation to move a document between categories
+      (metadata only, no re-embedding): `python -m scripts.catalog` and
+      `python -m scripts.catalog move <path> --to <category>`.
+- [x] Turn the retriever into a factory that accepts `k` and the documents in scope — one
+      `$in` filter over `source`, the per-document key the chunks already carry and that both
+      stores already filter and delete by. Deliberately not a general filter dictionary: the
+      two stores do not spell filters the same way, and one shape tested on both is worth
+      more than a passthrough nothing checks.
+- [x] Scoped chat: by category, by document, by selection of documents — `--category`,
+      `--document` and `--documents` on `python -m scripts.chat`.
+- [x] Read a scoped document whole rather than by top-k when its text fits the context
+      window, in reading order. The text lives in the vector store and nowhere else, so this
+      is a search for all of it (`k` is the catalog's chunk count) rather than a search that
+      is skipped. `WHOLE_DOCUMENT_MAX_CHARS` sets the budget, 0 turns it off.
+- [ ] Carry the category in the chunk metadata too, as a projection of the catalog fact, and
+      only if a measurement ever shows the filter to be the problem. Pinecone accepts 10,000
+      values per `$in` operator against a 2MB request limit, so a category would have to hold
+      that many documents before filtering on `source` stops being enough. The migration
+      would be metadata-only: read `(id, source)` from the store, join the catalog, rewrite
+      the metadata. No vector changes, so nothing is re-embedded.
 
 ## Phase 4 — The first web interface
 

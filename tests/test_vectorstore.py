@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from langchain_core.documents import Document
 
 import app.vectorstore as vectorstore_module
-from app.vectorstore import ensure_index
-from tests.helpers import make_settings
+from app.vectorstore import WholeDocumentRetriever, ensure_index
+from tests.helpers import FakeVectorStore, make_settings
 
 
 def _flat_vectors(dimension: int = 8):
@@ -157,3 +158,131 @@ def test_an_unknown_store_is_refused_and_the_known_ones_are_listed(monkeypatch):
 
     with pytest.raises(RuntimeError, match="pinecone or chroma"):
         vectorstore_module.get_vectorstore()
+
+
+def chunk(source: str, page: int, index: int) -> Document:
+    """A chunk as ingestion writes them: the source, the page, the position on it."""
+    return Document(
+        page_content=f"{source} p{page} c{index}",
+        metadata={"source": source, "page": page, "chunk_id": index},
+    )
+
+
+def holding(*chunks: Document) -> FakeVectorStore:
+    """A store already holding these chunks, as an earlier sync left it."""
+    store = FakeVectorStore()
+    store.added.append((list(chunks), [str(n) for n in range(len(chunks))]))
+    return store
+
+
+def wired(monkeypatch, store: FakeVectorStore, **settings: object) -> FakeVectorStore:
+    """Point the module at a fake store and at settings a test can predict."""
+    monkeypatch.setattr(vectorstore_module, "settings", make_settings(**settings))
+    monkeypatch.setattr(vectorstore_module, "get_vectorstore", lambda: store)
+    return store
+
+
+def test_k_is_what_the_caller_asked_for(monkeypatch):
+    store = wired(monkeypatch, holding(chunk("a.pdf", 0, 0)), retrieval_k=5)
+
+    retriever = vectorstore_module.build_retriever(k=2)
+
+    assert retriever.search_kwargs["k"] == 2
+    retriever.invoke("anything")
+    assert store.searches == [("anything", 2, None)]
+
+
+def test_a_question_with_no_scope_reads_the_whole_library(monkeypatch):
+    """No filter at all, which is what every command did before scopes."""
+    wired(
+        monkeypatch,
+        holding(chunk("manuals/a.pdf", 0, 0), chunk("reports/b.pdf", 0, 0)),
+        retrieval_k=5,
+    )
+
+    retriever = vectorstore_module.build_retriever()
+
+    assert "filter" not in retriever.search_kwargs
+    assert {found.metadata["source"] for found in retriever.invoke("q")} == {
+        "manuals/a.pdf",
+        "reports/b.pdf",
+    }
+
+
+def test_a_scope_becomes_one_filter_over_the_sources(monkeypatch):
+    """One shape, and it is the shape both stores answer."""
+    store = wired(
+        monkeypatch,
+        holding(chunk("manuals/a.pdf", 0, 0), chunk("reports/b.pdf", 0, 0)),
+    )
+
+    retriever = vectorstore_module.build_retriever(sources=["manuals/a.pdf"])
+    found = retriever.invoke("q")
+
+    assert [one.metadata["source"] for one in found] == ["manuals/a.pdf"]
+    assert store.searches == [
+        ("q", 5, {"source": {"$in": ["manuals/a.pdf"]}})
+    ]
+
+
+def test_a_scope_that_names_no_document_searches_nothing(monkeypatch):
+    """Not the same as no scope: an empty selection must not read the library.
+
+    `None` means everything and `[]` means nothing, and the difference is the
+    whole reason the filter is built from a list rather than from a truthiness
+    check. A scope never reaches here empty — it is refused when it is resolved —
+    so this guards the shape, not a path.
+    """
+    store = wired(monkeypatch, holding(chunk("manuals/a.pdf", 0, 0)))
+
+    retriever = vectorstore_module.build_retriever(sources=[])
+
+    assert retriever.invoke("q") == []
+    assert store.searches == [("q", 5, {"source": {"$in": []}})]
+
+
+def test_a_document_is_read_through_its_own_chunks(monkeypatch):
+    store = wired(
+        monkeypatch,
+        holding(chunk("manuals/a.pdf", 0, 0), chunk("reports/b.pdf", 0, 0)),
+    )
+
+    retriever = WholeDocumentRetriever(
+        store=store, source="manuals/a.pdf", k=1
+    )
+
+    assert [one.metadata["source"] for one in retriever.invoke("q")] == [
+        "manuals/a.pdf"
+    ]
+    assert store.searches == [("q", 1, {"source": "manuals/a.pdf"})]
+
+
+def test_a_whole_document_comes_back_in_reading_order(monkeypatch):
+    """A similarity search ranks by the question, so it hands back a shuffled
+    document; a document handed over as a pile of pages reads as one."""
+    store = wired(
+        monkeypatch,
+        holding(
+            chunk("manuals/a.pdf", 0, 0),
+            chunk("manuals/a.pdf", 0, 1),
+            chunk("manuals/a.pdf", 1, 0),
+        ),
+    )
+
+    retriever = WholeDocumentRetriever(store=store, source="manuals/a.pdf", k=3)
+    found = retriever.invoke("q")
+
+    assert [one.metadata["chunk_id"] for one in found] == [0, 1, 0]
+    assert [one.metadata["page"] for one in found] == [0, 0, 1]
+
+
+def test_a_whole_document_is_asked_for_in_full(monkeypatch):
+    """`k` is the chunk count the catalog holds, so nothing is left behind."""
+    store = wired(
+        monkeypatch,
+        holding(*(chunk("manuals/a.pdf", 0, n) for n in range(12))),
+    )
+
+    WholeDocumentRetriever(store=store, source="manuals/a.pdf", k=12).invoke("q")
+
+    assert store.searches[0][1] == 12
