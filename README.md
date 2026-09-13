@@ -12,8 +12,10 @@ answer.
 
 ## Getting started
 
-You need Python 3.11 or later and two API keys — DeepSeek writes the answers, Pinecone holds
-the passages. The embeddings run on your machine, so nothing is sent away to be indexed.
+You need Python 3.11 or later. DeepSeek writes the answers and Pinecone holds the passages,
+so that is two API keys — or one, if you keep the vectors in a folder on your own machine
+instead (see [Vector store](#vector-store)). The embeddings run on your machine either way,
+so nothing is sent away to be indexed.
 
 ```bash
 pip install -r requirements.txt
@@ -23,7 +25,7 @@ Create a `.env` file in the project root with the two keys. It is excluded from 
 control:
 
 ```text
-DEEPSEEK_API_KEY=...
+OPENAI_API_KEY=...      # the key of the chat model, DeepSeek unless you change it
 PINECONE_API_KEY=...
 ```
 
@@ -66,6 +68,62 @@ python -m scripts.delete --trashed             # empty the trash
 It removes the document from the index and from the catalog, so there is nothing left to
 bring back. The file stays where it is unless you add `--with-file`: without it, the next
 sync finds the file again and indexes it from scratch.
+
+## Models
+
+The defaults are DeepSeek for the answers and `BAAI/bge-m3` on your machine for the
+embeddings. Both can be pointed elsewhere in `.env`.
+
+```text
+# The chat model: any endpoint that speaks the OpenAI chat completions API,
+# hosted or on your own machine — the same three settings either way
+OPENAI_BASE_URL=https://api.deepseek.com/v1
+OPENAI_MODEL=deepseek-v4-flash
+OPENAI_API_KEY=...
+CHAT_PROVIDER=deepseek      # deepseek, openai, or local for a server of your own
+
+# The embedding model: on your machine, or through the OpenAI API
+EMBEDDING_PROVIDER=local    # local or openai
+EMBEDDING_MODEL=...         # BAAI/bge-m3 locally, text-embedding-3-small on openai
+EMBEDDING_API_KEY=...       # the OpenAI embeddings, when OPENAI_API_KEY is not one
+```
+
+`CHAT_PROVIDER` fills in the three settings above when they are left out, and adds the
+parameters that provider needs: `deepseek` turns its reasoning off, which keeps it out of
+the console and out of the token count. A model on your own machine is `local`, and it
+ignores the key.
+
+The chat model can be anything that speaks the OpenAI chat completions API. The embedding
+model cannot be swapped as freely: the index is built in the vector space of one model, so
+another one needs its own index and the documents indexed again. A sync pointed at an index
+built with a different model stops and says so.
+
+## Vector store
+
+The passages live in Pinecone by default. `VECTOR_STORE=chroma` keeps them in a folder on
+your machine instead: no account, no key, no network, and the whole library is
+`data/documents/` and `data/chroma/` together.
+
+```text
+VECTOR_STORE=chroma          # pinecone (the default) or chroma
+CHROMA_DIR=data/chroma       # where the local store keeps its files
+CHROMA_COLLECTION=documents
+```
+
+One line switches between them, and no command takes an argument for it: `python -m
+scripts.sync`, `python -m scripts.chat` and `python -m scripts.delete` all read the same
+`.env`, so they cannot end up on different stores. Each one prints the store it is using
+before it starts.
+
+The two hold different vectors, so each keeps its own catalog, and the catalog follows
+`VECTOR_STORE` on its own: `data/catalog.sqlite3` for Pinecone, `data/catalog-chroma.sqlite3`
+for Chroma. Set `CATALOG_DB_PATH` only to put one somewhere else — and if a catalog ever ends
+up describing a store that does not hold its vectors, the sync says so rather than reporting
+a run with nothing to do.
+
+One limit worth knowing: the sync and the delete command take a lock, the console does not.
+With a hosted index that does not matter, but with a local store a console session and a sync
+would be writing the same folder at the same time.
 
 ## Development
 

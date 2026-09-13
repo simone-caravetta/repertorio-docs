@@ -10,10 +10,15 @@ __pycache__/
 # I documenti indicizzati restano in locale: non vanno versionati.
 data/documents/**/*.pdf
 
-# Il catalogo è locale come i documenti che descrive.
-data/catalog.sqlite3
-data/catalog.sqlite3-journal
-data/catalog.sqlite3.lock
+# Il catalogo è locale come i documenti che descrive. Ce n'è uno per store,
+# quindi il nome segue VECTOR_STORE: il pattern li copre tutti.
+data/catalog*.sqlite3
+data/catalog*.sqlite3-journal
+data/catalog*.sqlite3.lock
+
+# Lo stesso vale per il vector store locale: è la libreria indicizzata, non
+# codice, e si ricostruisce con un sync.
+data/chroma/
 
 # Optional local caches if configured inside the project
 .huggingface/

@@ -4,7 +4,7 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
-from app.config import settings
+from app.config import describe_vector_store, settings, short_path
 from app.lifecycle import DeleteReport, delete_documents, trashed_paths
 from scripts.locks import single_run
 
@@ -24,6 +24,11 @@ def delete(
     """
     documents_dir = Path(documents_dir or settings.documents_dir)
     db_path = Path(db_path or settings.catalog_db_path)
+
+    # Said before the work: a delete is the command where being pointed at the
+    # other store costs the most.
+    print(f"store   {describe_vector_store(settings)}")
+    print(f"catalog {short_path(db_path)}\n")
 
     vectorstore = None
     if not dry_run:

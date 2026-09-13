@@ -1,4 +1,4 @@
-"""Test doubles: a minimal PDF writer and a fake vector store."""
+"""Test doubles: a minimal PDF writer, a fake vector store, a hermetic Settings."""
 
 from __future__ import annotations
 
@@ -7,9 +7,42 @@ from pathlib import Path
 
 from langchain_core.documents import Document
 
+from app.config import Settings
+
 # A line long enough to produce a chunk, short enough to stay well under the
 # default chunk size.
 SENTENCE = "The manual of the thing explains how the thing works. "
+
+
+def make_settings(**overrides: object) -> Settings:
+    """A Settings that does not depend on the machine the tests run on.
+
+    Every field a provider reads is set here explicitly, because the defaults
+    are read from the environment once, when the class is defined. `overrides`
+    replaces the ones a test is about.
+    """
+    values: dict[str, object] = {
+        "chat_provider": "deepseek",
+        "openai_base_url": "",
+        "openai_model": "",
+        "openai_api_key": "endpoint-key",
+        "embedding_provider": "local",
+        "embedding_model": "",
+        "embedding_device": "cpu",
+        "embedding_batch_size": 32,
+        "embedding_api_key": "",
+        "vector_store": "pinecone",
+        "chroma_dir": Path("/tmp/repertorio-docs-test-chroma"),
+        "chroma_collection": "documents",
+        # Set explicitly like every other provider: the catalog default follows
+        # VECTOR_STORE, and that is read from the machine's `.env` once, when
+        # the class is defined. A test must not inherit the folder layout of
+        # whoever runs it.
+        "documents_dir": Path("/tmp/repertorio-docs-test/documents"),
+        "catalog_db_path": Path("/tmp/repertorio-docs-test/catalog.sqlite3"),
+    }
+    values.update(overrides)
+    return Settings(**values)  # type: ignore[arg-type]
 
 
 def _escape(text: str) -> str:

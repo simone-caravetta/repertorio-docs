@@ -3,14 +3,26 @@ from __future__ import annotations
 import asyncio
 from uuid import uuid4
 
-from app.rag_graph import app, get_thread_state
+from app.config import describe_vector_store, settings
+from app.rag_graph import get_app, get_thread_state
 
 
 async def run_chat() -> None:
+    try:
+        graph = get_app()
+    except RuntimeError as exc:
+        # A key that is missing or a provider that is misspelled is a message to
+        # read, not a stack trace to work through.
+        raise SystemExit(str(exc)) from exc
+
     thread_id = f"console-{uuid4()}"
     config = {"configurable": {"thread_id": thread_id}}
 
     print("Repertorio Docs console")
+    # The console reads the same `.env` as the sync, but saying which store it
+    # ended up on costs a line and answers the first question a wrong answer
+    # raises.
+    print(f"store: {describe_vector_store(settings)}")
     print("Type 'exit' to quit.\n")
 
     while True:
@@ -28,7 +40,7 @@ async def run_chat() -> None:
         print("Assistant: ", end="", flush=True)
 
         try:
-            async for chunk in app.astream(
+            async for chunk in graph.astream(
                 {
                     "messages": [
                         {

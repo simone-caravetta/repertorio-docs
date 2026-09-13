@@ -40,12 +40,15 @@ class DeleteReport:
 def delete_document_vectors(source: str, vectorstore: VectorStore) -> None:
     """Remove every chunk of one document from the vector store.
 
-    The filter delete is a Pinecone extension of the `VectorStore` interface and
-    only reaches the namespace this store is bound to. Deleting the old chunks
-    before the new ones are written is what keeps a crash from leaving two
-    generations of the same document in the index. It also means that deleting
-    vectors outside the catalog is not recoverable: the document would have to
-    be re-ingested from scratch.
+    `filter=` is an extension of the `VectorStore` interface that the hosted
+    store provides natively; the local one reaches the same rows through its own
+    `where=`, translated in `app.chroma_store`. Either way this is the only place
+    document-level vector deletion happens, and it reaches only the namespace or
+    collection the store is bound to. Deleting the old chunks before the new ones
+    are written is what keeps a crash from leaving two generations of the same
+    document in the store. It also means that deleting vectors outside the
+    catalog is not recoverable: the document would have to be re-ingested from
+    scratch.
     """
     vectorstore.delete(filter={"source": source})
 

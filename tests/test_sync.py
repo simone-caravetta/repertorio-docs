@@ -173,6 +173,28 @@ def test_a_pdf_without_text_is_recorded_as_failed(
     ).failed
 
 
+def test_a_failed_document_that_is_removed_is_trashed(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    """A document with no vectors still has to trash cleanly.
+
+    A scanned PDF fails with nothing written, so it has a row and no chunks.
+    Removing the file then asks the store to delete vectors that were never
+    there — and the delete is not guarded at the call site, because the update
+    path must not re-add on top of stale chunks. A store that raises on an empty
+    match would leave this row failed forever, breaking every later run.
+    """
+    make_pdf(documents_dir / "scans" / "scan.pdf", "")
+    run(documents_dir, db_path, store)
+    (documents_dir / "scans" / "scan.pdf").unlink()
+
+    report = run(documents_dir, db_path, store)
+
+    assert report.trashed == ["scans/scan.pdf"]
+    assert report.failed == []
+    assert Catalog(db_path).get("scans/scan.pdf").status == "trashed"
+
+
 def test_an_interrupted_run_is_picked_up_again(
     documents_dir: Path, db_path: Path, store: FakeVectorStore
 ) -> None:

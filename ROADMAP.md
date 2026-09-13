@@ -20,9 +20,12 @@ them.
 - **Document identity.** The catalog needs a stable id. Using the file path keeps it
   simple, but renaming then has to be a managed operation that preserves the id, rather
   than a filesystem event that breaks the catalog.
-- **Vector store.** Pinecone or a local store (LanceDB, Chroma, sqlite-vec). A local store
-  makes the whole app one folder you can copy, removes an API key and works offline.
-  Switching later means re-embedding the entire corpus, so it is worth deciding early.
+- **Vector store.** Settled as a setting rather than a choice: `VECTOR_STORE` selects Pinecone
+  or a local Chroma, and the app works with either. One line switches between them, and each
+  store keeps its own catalog, so switching re-indexes into the new store rather than finding
+  every file unchanged. The vectors of the store left behind stay where they are. Which one a
+  corpus should live in is still answered per installation; what is still missing is the
+  catalog recording the embedding model it was built with — see Phase 2.
 - **Embedding model.** It defines the vector space the whole corpus lives in, so it is a
   decision at corpus level rather than a preference: changing it means re-indexing
   everything, and two models with the same dimension are still not compatible. Pick a model
@@ -41,7 +44,9 @@ managed.
 
 - [x] Catalog database (SQLite): id, path, title, description, category, file hash, status,
       page and chunk counts, timestamps.
-- [x] Delete by metadata filter on `source`.
+- [x] Delete a document's vectors by metadata filter on `source`, whatever the store: the
+      hosted one deletes by filter natively, the local one reaches the same rows through its
+      own `where=`.
 - [x] Update as delete + re-add, triggered by comparing the file hash.
 - [x] A `sync` command that reconciles filesystem, catalog and index: add, update, delete.
 - [x] Delete a document from the index and the catalog, as a command of its own: the sync
@@ -61,20 +66,41 @@ managed.
 
 ## Phase 2 — Model providers
 
-The chat model is free to swap; the embedding model gets curated, because a wrong chat
-model produces one bad answer, while a wrong embedding model produces wrong results for the
-whole corpus.
+The chat model is free to swap: anything that speaks the OpenAI chat completions API works,
+which covers DeepSeek, an OpenAI model and a model running on your own machine. The
+embedding model is a choice between two, because it defines the vector space the whole
+corpus lives in: a wrong chat model produces one bad answer, a wrong embedding model
+produces wrong results for everything.
 
-- [ ] Chat model as any OpenAI-compatible endpoint, configured with `base_url`, model and
-      key, so DeepSeek, a local vLLM/Ollama server or a hosted provider can be swapped
-      without touching the graph. Provider-specific parameters (`extra_body`) live in the
-      profile, not in the code.
-- [ ] Embeddings from a curated list instead of free choice: a few known-good models, each
-      with its declared dimension and a measured result on the sample corpus.
-- [ ] Embedding configuration as two separate fields: the curated model id, and the way it
-      is served (`local` in-process, or `api` against an OpenAI-compatible endpoint). The
-      same model served either way produces the same vectors, so changing the delivery mode
-      needs no reindex.
+- [x] Chat model as any OpenAI-compatible endpoint, configured with `OPENAI_BASE_URL`,
+      `OPENAI_MODEL` and `OPENAI_API_KEY` — the names the OpenAI client already reads, so a
+      server on your own machine is pointed at the same way as a hosted one, and DeepSeek,
+      an OpenAI model or a local server can be swapped without touching the graph.
+      Provider-specific parameters (`extra_body`) live in the preset, not in the code. One
+      client class covers all three: DeepSeek is reached through the same `ChatOpenAI` as
+      the others, and `langchain-deepseek` is no longer a dependency.
+- [x] Embeddings from two providers: the local model (`BAAI/bge-m3`, in-process) or the
+      OpenAI API, each with its own key and an overridable model name.
+- [x] The graph takes its model and its retriever as arguments instead of building them at
+      import, so it can be run against fakes and tested without an API key.
+- [x] The index dimension is measured from the embedding model rather than declared, and a
+      mismatch with the existing index stops the run before anything is written.
+- [x] The vector store as a setting: `VECTOR_STORE=pinecone` for the hosted index, or
+      `VECTOR_STORE=chroma` for a folder on this machine, with no account and no network. One
+      store interface for both, so nothing above it knows which one is in use.
+- [ ] Record in the catalog which store and which embedding model it was built against, and
+      refuse — or re-index — on a mismatch. Each store keeping its own catalog settles the
+      store half: switching store starts that store's catalog from nothing and re-indexes
+      honestly, and the sync warns when a catalog is pointed at a store holding no vectors.
+      What is still unrecorded is the identity inside one catalog, the embedding model above
+      all — two different models of the same length slip past a check that measures length.
+- [x] Re-index when the store changes rather than refusing. With a catalog per store this
+      happens by itself: the new store's catalog is empty, so every file is new to it and the
+      run indexes the whole library. The previous store's vectors are left behind, and the
+      run says how many documents it is writing, so it does not read as a fault.
+- [ ] A lock the console takes too, or a local store that tolerates one writer and one reader.
+      The sync and delete take a lock today; the console does not, which is harmless against a
+      hosted index and not obviously harmless against a folder.
 - [ ] Fingerprint the index: embed a fixed probe string when the index is created, store
       the resulting vector, and re-check it at startup. Compare with a tolerance rather
       than for equality, so the same model in a different build (a quantised server versus
@@ -216,7 +242,8 @@ Every tool starts as a deterministic action.
 
 ## Later
 
-- [ ] A fully offline setup: local vector store, local embedding server, local chat model.
+- [ ] A fully offline setup: local embedding server and local chat model. (The local vector
+      store is done — `VECTOR_STORE=chroma`.)
 - [ ] Multi-machine access.
 
 ## Non-goals
