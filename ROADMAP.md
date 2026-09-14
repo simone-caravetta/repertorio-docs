@@ -162,8 +162,9 @@ about them.
       is one blank line and two fields and needs no library. `EventSource` would have put the
       question in the URL, where it is logged, capped in length and kept in the history.
 - [x] Catalog view: documents grouped by category, each with its title and its status. What is
-      not `indexed` is shown with the status it is in, and what is trashed is left out.
-      `description` is in the view and is empty: nothing writes it until Phase 5.
+      not `indexed` is shown with the status it is in, and what is trashed is left out. The
+      description is shown under the title when the catalog holds one, which it did not
+      until Phase 5's `scripts.describe` began writing them.
 - [x] Chat panel with a scope selector. The selector offers the whole library and every
       category, and a document is picked by clicking it in the catalog. The label beside it is
       the string `resolve_scope` produces, character for character the one the console prints.
@@ -185,8 +186,23 @@ about them.
 
 ## Phase 5 — Smart ingestion
 
-- [ ] LLM-generated title and description at ingest, sampled across the document rather
-      than only its beginning, and editable by hand.
+- [x] Description per document, written by the configured chat model: `python -m
+      scripts.describe`, one model call per document, over a sample taken from across the
+      document rather than only its beginning, in the language the document is written in,
+      kept in the catalog's `description` column. Deliberately not at ingest and not part of
+      the sync, which makes no model calls and so stays free and needs no key: what is spent
+      is spent when the command is run. A second run describes only what has none, so it can
+      follow every sync at no cost, and naming a document describes it again.
+      `DESCRIPTION_SAMPLE_CHARS` is how much of a document is read, `DESCRIPTION_BUDGET_CHARS`
+      how much of the catalog goes into one answer's context. The description is placed there
+      under the list of the documents searched, which is the fix for the failure that named
+      this work: asked over the whole library what each document contains, a top-k search
+      beside a large document returns that document's passages and nothing about the others,
+      and a description is the answer rather than a sample of one. It is shown in the page
+      and in `python -m scripts.catalog --documents`.
+- [ ] The title generated rather than taken from the file name, a description written at
+      ingest, and a description that can be edited or written by hand. Today nothing but
+      `scripts.describe` writes the column and nothing edits it.
 - [ ] Auto-derived tags, document type, language and date.
 - [ ] Structure-aware chunking with PyMuPDF: keep tables whole, split on headings.
 - [ ] Duplicate and near-duplicate detection from the embeddings.

@@ -127,6 +127,11 @@ def file_document(
         catalog.record_failed(path, "No text extracted")
 
 
+def described(db_path: Path, path: str, text: str) -> None:
+    """What `scripts.describe` leaves behind: the catalog saying what it is about."""
+    Catalog(db_path).set_description(path, text)
+
+
 def events_of(response: Any) -> list[tuple[str, dict[str, Any]]]:
     """A stream as the page reads it: the name and the payload of each event."""
     events: list[tuple[str, dict[str, Any]]] = []
@@ -435,6 +440,30 @@ def test_the_answer_is_told_which_documents_the_question_was_asked_of(
 
     written_with = str(harness.model.prompts[1])
     assert f"Documents searched: 2 — {MANUAL}, {REPORT}" in written_with
+
+
+def test_the_answer_is_told_what_the_documents_contain(
+    db_path: Path, config: Settings
+):
+    """The other half of the same blind spot: a question about the contents.
+
+    "What does each of them contain?" is answered by a search with the passages
+    of whichever documents happen to match it, so a document it did not return is
+    one the answer has nothing to say about. What the catalog says about each of
+    them goes into the context beside the list, and the answer is written from it.
+    """
+    file_document(db_path, MANUAL, category="manuals")
+    file_document(db_path, REPORT, category="reports")
+    described(db_path, MANUAL, "A manual about the thing.")
+    described(db_path, REPORT, "Last year's report.")
+    harness = harness_for(config, replies=["a standalone question", "the answer"])
+
+    with harness.client() as client:
+        ask(client, "what does each of them contain?")
+
+    written_with = str(harness.model.prompts[1])
+    assert f"{MANUAL} — A manual about the thing." in written_with
+    assert f"{REPORT} — Last year's report." in written_with
 
 
 def test_a_scoped_answer_is_told_only_about_the_documents_it_searched(

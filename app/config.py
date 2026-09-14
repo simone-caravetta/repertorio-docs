@@ -66,6 +66,19 @@ class Settings:
     whole_document_max_chars: int = int(
         os.getenv("WHOLE_DOCUMENT_MAX_CHARS", "24000")
     )
+    # What a description is written from: a sample taken from across a document,
+    # not its opening pages, and this is the budget it is taken within. Read once
+    # per document, by `scripts.describe`.
+    description_sample_chars: int = int(
+        os.getenv("DESCRIPTION_SAMPLE_CHARS", "6000")
+    )
+    # How much of the catalogue goes into one context window, under the list of
+    # the documents that were searched. A description is a paragraph and a scope
+    # can cover a library, so what does not fit is left out and the documents are
+    # still named; 0 turns the descriptions off.
+    description_budget_chars: int = int(
+        os.getenv("DESCRIPTION_BUDGET_CHARS", "2000")
+    )
 
     documents_dir: Path = PROJECT_ROOT / os.getenv(
         "DOCUMENTS_DIR", "data/documents"

@@ -57,6 +57,8 @@ def make_settings(**overrides: object) -> Settings:
         "chunk_size": 200,
         "retrieval_k": 5,
         "whole_document_max_chars": 24000,
+        "description_sample_chars": 6000,
+        "description_budget_chars": 2000,
     }
     values.update(overrides)
     return Settings(**values)  # type: ignore[arg-type]

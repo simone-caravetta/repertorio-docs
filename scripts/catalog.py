@@ -52,12 +52,12 @@ def show(*, documents: bool = False, db_path: Path | None = None) -> None:
     for name, branch, depth in rows:
         print(f"{name.ljust(width)}  {documents_count(branch.total)}")
         if documents:
-            print_documents(catalog.sources_in_category(branch.name), depth + 1)
+            print_documents(catalog, catalog.sources_in_category(branch.name), depth + 1)
 
     if loose:
         print(f"{NO_CATEGORY.ljust(width)}  {documents_count(loose)}")
         if documents:
-            print_documents(catalog.sources_in_category(None), 1)
+            print_documents(catalog, catalog.sources_in_category(None), 1)
 
 
 def walk(
@@ -78,14 +78,21 @@ def label_of(branch: CategoryBranch, depth: int) -> str:
     return "  " * depth + branch.name
 
 
-def print_documents(sources: list[str], depth: int) -> None:
+def print_documents(catalog: Catalog, sources: list[str], depth: int) -> None:
     """The documents of a branch, one level in from it.
 
     Dashed, because a line without a dash is a category and the two must not have
-    to be told apart by reading them.
+    to be told apart by reading them. What the catalog says about a document sits
+    under it, indented one more: it belongs to the line above, and it is the
+    reason to ask for the documents at all rather than only their counts.
     """
     for source in sources:
         print(f"{'  ' * depth}- {source}")
+
+        record = catalog.get(source)
+        description = (record.description or "").strip() if record else ""
+        if description:
+            print(f"{'  ' * (depth + 1)}  {description}")
 
 
 def documents_count(count: int) -> str:

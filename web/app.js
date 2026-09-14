@@ -60,6 +60,8 @@ function renderBranch(branch, depth) {
  * `document` for the whole function, and the first `document.createElement`
  * inside it is then a call on the JSON object rather than on the page. */
 function renderDocument(record, depth) {
+  const group = document.createElement("div");
+
   const row = document.createElement("button");
   row.type = "button";
   row.className = "document";
@@ -73,7 +75,19 @@ function renderDocument(record, depth) {
   }
 
   row.addEventListener("click", () => chooseDocument(record.path));
-  elements.catalog.append(row);
+  group.append(row);
+
+  /* What the catalog says the document is about, written by `scripts.describe`
+   * and empty until it has been run. A row with nothing to say says nothing:
+   * the line is here rather than a placeholder. */
+  if (record.description) {
+    const described = line(record.description, "description");
+    described.style.paddingLeft = `${depth + 1}rem`;
+    described.addEventListener("click", () => chooseDocument(record.path));
+    group.append(described);
+  }
+
+  elements.catalog.append(group);
 }
 
 /* ------------------------------------------------------------------ scope */

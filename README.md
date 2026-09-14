@@ -32,8 +32,9 @@ PINECONE_API_KEY=...
 Put your PDFs in `data/documents/`, then:
 
 ```bash
-python -m scripts.sync     # index what is new or has changed
-python -m scripts.chat     # ask questions about it
+python -m scripts.sync      # index what is new or has changed
+python -m scripts.describe  # write what each document contains, one model call each
+python -m scripts.chat      # ask questions about it
 ```
 
 ```text
@@ -101,6 +102,37 @@ enough to fit the model's context is read whole rather than by similarity, in re
 so nothing in it is left out by ranking; `WHOLE_DOCUMENT_MAX_CHARS` sets the budget (24000 by
 default, 0 to always search by similarity).
 
+## Descriptions
+
+Which documents there are, and what each one contains, is not something a search can answer:
+a search over the whole library returns the passages closest to the question, and a small
+document beside a large one is never among them. So each document is described once, and the
+description goes into the context of every answer, under the list of documents the question
+was asked of.
+
+```bash
+python -m scripts.describe                # the documents that have no description yet
+python -m scripts.describe manuals/a.pdf  # this one, described again
+python -m scripts.describe --all          # every indexed document, written again
+python -m scripts.describe --dry-run      # what a run would do, without calling a model
+```
+
+One model call per document, over a sample taken from across the document rather than from
+its first pages, and the description is written in the language the document is written in.
+It is kept in the catalog, so it is written once and read every time: `python -m
+scripts.catalog --documents` prints it under the document, the page shows it under the
+title, and it is part of what the answer is written from. A second run costs nothing — a
+described document is left alone unless you name it or pass `--all`.
+
+`DESCRIPTION_SAMPLE_CHARS` is how much of a document is read to write its description (6000
+by default); `DESCRIPTION_BUDGET_CHARS` is how much of the catalog goes into one answer's
+context (2000). The documents are named in that context either way, so a scope too large to
+describe loses the descriptions and nothing else; 0 turns either budget off.
+
+The sync does not call a model, so it stays free and needs no key. That is why this is a
+command of its own rather than a step of the sync: nothing is spent until you ask, and a
+document is described by `python -m scripts.describe`, not when it is indexed.
+
 ## Web interface
 
 The same library in a browser, with the same scopes:
@@ -109,10 +141,10 @@ The same library in a browser, with the same scopes:
 python -m scripts.serve     # http://127.0.0.1:8000
 ```
 
-The catalog is on the left, grouped by category, each document with its title and its status;
-clicking a document asks about that document. The conversation is on the right, and the
-sources of the answer appear as soon as the search is done, while the answer is still being
-written. The selector at the top chooses what the next question is asked of, and prints the
+The catalog is on the left, grouped by category, each document with its title, its
+description and its status; clicking a document asks about that document. The conversation is
+on the right, and the sources of the answer appear as soon as the search is done, while the
+answer is still being written. The selector at the top chooses what the next question is asked of, and prints the
 scope in the same words the console prints it in.
 
 Under each answer there is a line saying what was searched for. It is not always the question
@@ -121,10 +153,9 @@ that "and for minors?" becomes a question that stands on its own. The line is wh
 rewrite produced, and it is worth reading when an answer seems to have come from the wrong
 document.
 
-The answer is told which documents were searched and not only which passages were found,
-which is what makes a question about the library itself answerable. Asked what documents
-there are, a search returns the passages closest to the question — and a question that
-matches none of them returns one document's passages and nothing about the others.
+The answer is told which documents were searched, and what the catalog says about each of
+them, and not only which passages were found — see [Descriptions](#descriptions). That is
+what makes a question about the library itself answerable.
 
 Conversations are kept in `data/conversations.sqlite3`, so a conversation is still there
 after the server is restarted. Changing the scope starts a new one: a conversation's history

@@ -153,6 +153,18 @@ h2 {
   color: var(--failed);
 }
 
+/* What the catalog says the document is about. It belongs to the row above it,
+ * so it is indented further in and quieter than the row itself, and clicking it
+ * asks about the document the same way clicking the row does. */
+.description {
+  margin: 0.05rem 0 0.5rem;
+  padding-right: 0.4rem;
+  color: var(--quiet);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
 .empty {
   color: var(--quiet);
 }

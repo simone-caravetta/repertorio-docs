@@ -32,27 +32,73 @@ class Scope:
     the catalog. The two are kept apart because they answer different questions.
     A search wants to know what to filter by, and an answer wants to be told what
     was searched: asked which documents there are, a model holding nothing but the
-    passages in front of it names the one they came from. `chunks` is the chunk
-    count of the one document a whole-document scope reads, and is None otherwise.
+    passages in front of it names the one they came from. `descriptions` is what
+    the catalog says about those documents, for the ones that have been described:
+    the same argument one step further, because asked what the documents contain
+    the passages are a sample of the answer rather than the answer. `chunks` is
+    the chunk count of the one document a whole-document scope reads, and is None
+    otherwise.
     """
 
     sources: tuple[str, ...] | None
     label: str
     documents: tuple[str, ...] = ()
+    descriptions: tuple[tuple[str, str], ...] = ()
     whole_document: bool = False
     chunks: int | None = None
 
 
-def whole_library(catalog: Catalog) -> Scope:
+def whole_library(catalog: Catalog, *, config: Settings) -> Scope:
     """Everything indexed, which is what a question without a scope searches.
 
     Asked of the catalog, not left empty: the search is given no filter, but the
     documents it ends up covering are read from the catalog all the same, because
-    the answer has to be able to say what was searched.
+    the answer has to be able to say what was searched — and what it can say about
+    them goes with them.
     """
+    documents = _indexed(catalog)
+
     return Scope(
-        sources=None, label="whole library", documents=_indexed(catalog)
+        sources=None,
+        label="whole library",
+        documents=documents,
+        descriptions=_described(
+            catalog, documents, budget=config.description_budget_chars
+        ),
     )
+
+
+def _described(
+    catalog: Catalog, documents: tuple[str, ...], *, budget: int
+) -> tuple[tuple[str, str], ...]:
+    """What the catalog says about each document, while it fits a budget.
+
+    The documents are named in the context either way, so a scope too large to
+    describe loses the descriptions and nothing else. What does not fit is left
+    out in the order the scope lists the documents, and `budget` of 0 — or a
+    description longer than it, which the prompt keeps from happening — leaves
+    them all out.
+    """
+    if budget <= 0 or not documents:
+        return ()
+
+    said = {
+        record.path: (record.description or "").strip()
+        for record in catalog.all()
+    }
+    written: list[tuple[str, str]] = []
+    spent = 0
+
+    for path in documents:
+        description = said.get(path)
+        if not description:
+            continue
+        if spent + len(description) > budget:
+            break
+        spent += len(description)
+        written.append((path, description))
+
+    return tuple(written)
 
 
 def _indexed(catalog: Catalog) -> tuple[str, ...]:
@@ -116,20 +162,27 @@ def resolve_scope(
         raise ValueError("A scope is one of " + ", ".join(given) + ", not several.")
 
     if category is not None:
-        return _category_scope(catalog, normalise_category(category))
+        return _category_scope(catalog, normalise_category(category), config=config)
 
     if document is not None:
         record = _lookup(catalog, as_source(document, config.documents_dir))
-        return _one_document_scope(record, config)
+        return _one_document_scope(catalog, record, config)
 
     if documents:
         sources = tuple(
             _lookup(catalog, as_source(path, config.documents_dir)).path
             for path in documents
         )
-        return Scope(sources=sources, label=_documents(len(sources)), documents=sources)
+        return Scope(
+            sources=sources,
+            label=_documents(len(sources)),
+            documents=sources,
+            descriptions=_described(
+                catalog, sources, budget=config.description_budget_chars
+            ),
+        )
 
-    return whole_library(catalog)
+    return whole_library(catalog, config=config)
 
 
 def build_scoped_retriever(scope: Scope) -> BaseRetriever:
@@ -154,7 +207,7 @@ def build_scoped_retriever(scope: Scope) -> BaseRetriever:
     return build_retriever(sources=scope.sources)
 
 
-def _category_scope(catalog: Catalog, name: str | None) -> Scope:
+def _category_scope(catalog: Catalog, name: str | None, *, config: Settings) -> Scope:
     sources = tuple(catalog.sources_in_category(name))
 
     if not sources:
@@ -171,10 +224,15 @@ def _category_scope(catalog: Catalog, name: str | None) -> Scope:
         sources=sources,
         label=f"{named} ({_documents(len(sources))})",
         documents=sources,
+        descriptions=_described(
+            catalog, sources, budget=config.description_budget_chars
+        ),
     )
 
 
-def _one_document_scope(record: DocumentRecord, config: Settings) -> Scope:
+def _one_document_scope(
+    catalog: Catalog, record: DocumentRecord, config: Settings
+) -> Scope:
     """One document, read whole when it is small enough to be handed over.
 
     The estimate is a pre-flight one, from numbers the catalog already holds, so
@@ -197,6 +255,9 @@ def _one_document_scope(record: DocumentRecord, config: Settings) -> Scope:
         sources=(record.path,),
         label=label,
         documents=(record.path,),
+        descriptions=_described(
+            catalog, (record.path,), budget=config.description_budget_chars
+        ),
         whole_document=whole,
         chunks=record.chunk_count if whole else None,
     )

@@ -251,6 +251,22 @@ def test_moving_an_unknown_document_raises(catalog: Catalog) -> None:
         catalog.set_category("ghost.pdf", "manuals")
 
 
+def test_a_document_can_be_described(catalog: Catalog) -> None:
+    """The one column nothing wrote, and the one `scripts.describe` fills."""
+    catalog.add_file("a.pdf", "a")
+
+    assert catalog.get("a.pdf").description is None
+
+    catalog.set_description("a.pdf", "A manual about the thing.")
+
+    assert catalog.get("a.pdf").description == "A manual about the thing."
+
+
+def test_describing_an_unknown_document_raises(catalog: Catalog) -> None:
+    with pytest.raises(KeyError, match="No such document"):
+        catalog.set_description("ghost.pdf", "A manual about the thing.")
+
+
 def test_a_category_takes_the_documents_below_it(catalog: Catalog) -> None:
     for path in ("manuals/a.pdf", "manuals/ancient/b.pdf", "reports/c.pdf"):
         catalog.add_file(path, Path(path).stem, category=category_from_path(path))

@@ -17,6 +17,11 @@ def indexed(catalog: Catalog, path: str, *, chunks: int = 2) -> None:
     )
 
 
+def described(catalog: Catalog, path: str, text: str) -> None:
+    """A document with something written about it, as `scripts.describe` leaves it."""
+    catalog.set_description(path, text)
+
+
 def test_a_question_with_no_scope_is_asked_of_the_whole_library(
     catalog: Catalog,
 ) -> None:
@@ -30,7 +35,9 @@ def test_a_question_with_no_scope_is_asked_of_the_whole_library(
 def test_whole_library_is_the_scope_a_console_starts_on() -> None:
     catalog = Catalog(":memory:")
 
-    assert whole_library(catalog) == resolve_scope(catalog, config=make_settings())
+    assert whole_library(catalog, config=make_settings()) == resolve_scope(
+        catalog, config=make_settings()
+    )
 
 
 def test_the_whole_library_names_the_documents_it_covers(catalog: Catalog) -> None:
@@ -57,6 +64,73 @@ def test_the_whole_library_leaves_out_what_a_search_cannot_reach(
     scope = resolve_scope(catalog, config=make_settings())
 
     assert scope.documents == ("manuals/a.pdf",)
+
+
+def test_a_scope_carries_what_the_catalog_says_about_its_documents(
+    catalog: Catalog,
+) -> None:
+    """The answer is told what the documents contain, and not only which they are."""
+    indexed(catalog, "manuals/a.pdf")
+    indexed(catalog, "reports/c.pdf")
+    described(catalog, "manuals/a.pdf", "A manual about the thing.")
+    described(catalog, "reports/c.pdf", "Last year's report.")
+
+    scope = resolve_scope(catalog, config=make_settings())
+
+    assert scope.descriptions == (
+        ("manuals/a.pdf", "A manual about the thing."),
+        ("reports/c.pdf", "Last year's report."),
+    )
+
+
+def test_a_document_with_nothing_written_about_it_is_still_named(
+    catalog: Catalog,
+) -> None:
+    """The list of documents is the scope; a description is an extra on top."""
+    indexed(catalog, "manuals/a.pdf")
+    indexed(catalog, "reports/c.pdf")
+    described(catalog, "manuals/a.pdf", "A manual about the thing.")
+
+    scope = resolve_scope(catalog, config=make_settings())
+
+    assert scope.documents == ("manuals/a.pdf", "reports/c.pdf")
+    assert scope.descriptions == (("manuals/a.pdf", "A manual about the thing."),)
+
+
+def test_descriptions_stop_at_the_budget_they_are_given(catalog: Catalog) -> None:
+    """A scope over a library spends a paragraph on the catalog, and no more."""
+    indexed(catalog, "manuals/a.pdf")
+    indexed(catalog, "reports/c.pdf")
+    described(catalog, "manuals/a.pdf", "x" * 30)
+    described(catalog, "reports/c.pdf", "y" * 30)
+
+    scope = resolve_scope(catalog, config=make_settings(description_budget_chars=40))
+
+    assert scope.descriptions == (("manuals/a.pdf", "x" * 30),)
+    assert scope.documents == ("manuals/a.pdf", "reports/c.pdf")
+
+
+def test_a_budget_of_zero_leaves_the_descriptions_out(catalog: Catalog) -> None:
+    indexed(catalog, "manuals/a.pdf")
+    described(catalog, "manuals/a.pdf", "A manual about the thing.")
+
+    scope = resolve_scope(catalog, config=make_settings(description_budget_chars=0))
+
+    assert scope.descriptions == ()
+    assert scope.documents == ("manuals/a.pdf",)
+
+
+def test_a_category_scope_carries_the_descriptions_of_its_documents(
+    catalog: Catalog,
+) -> None:
+    indexed(catalog, "manuals/a.pdf")
+    indexed(catalog, "reports/c.pdf")
+    described(catalog, "manuals/a.pdf", "A manual about the thing.")
+    described(catalog, "reports/c.pdf", "Last year's report.")
+
+    scope = resolve_scope(catalog, config=make_settings(), category="manuals")
+
+    assert scope.descriptions == (("manuals/a.pdf", "A manual about the thing."),)
 
 
 def test_a_category_brings_its_documents_and_the_ones_below(

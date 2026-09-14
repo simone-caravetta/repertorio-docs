@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from typing import Any
 
@@ -64,10 +64,13 @@ answer, say so clearly instead of guessing, and do not fill the gaps from your
 own knowledge. Never invent facts, figures, names, procedures or rules that are
 not in the context.
 
-The context opens with the list of the documents the search was run over, and
-that list is part of the context. Answer from it when the question is about the
-library itself — which documents there are, how many — and from the passages
-when it is about what the documents say.
+The context opens with the documents the search was run over and, under each,
+what the catalogue says about it. Both are part of the context. Answer from them
+when the question is about the library itself — which documents there are, what
+each one contains — and from the passages when it is about what a document says.
+A document the search returned no passage of is still a document you can say
+something about, when its description is there; say that the description is what
+you are answering from, and do not present it as a passage.
 
 Write the answer in the language of the question, not the language of the
 passages: a question asked in English gets an English answer even when every
@@ -96,6 +99,7 @@ def format_context(
     documents: list[Document],
     *,
     in_scope: Sequence[str] | None = None,
+    descriptions: Mapping[str, str] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Render retrieved chunks as the context block, beside the sources to cite.
 
@@ -105,14 +109,22 @@ def format_context(
     documents there are, how many — is answered by whatever the search happened
     to hit, and a model holding only those names them as the library. The scope
     knows better, and this is where the answer is told.
+
+    `descriptions` goes under that list, one line per document that has one. The
+    passages are what the search found, which is a sample of what a document
+    holds; what the catalog says about it is not a sample, and it is there for
+    every document in scope rather than for the ones the search reached.
     """
     context_parts: list[str] = []
     source_rows: list[dict[str, Any]] = []
 
     if in_scope:
-        context_parts.append(
-            f"Documents searched: {len(in_scope)} — " + ", ".join(in_scope)
-        )
+        lines = [f"Documents searched: {len(in_scope)} — " + ", ".join(in_scope)]
+        for name in in_scope:
+            said = (descriptions or {}).get(name)
+            if said:
+                lines.append(f"{name} — {said}")
+        context_parts.append("\n".join(lines))
 
     for doc in documents:
         source = str(doc.metadata.get("source", "unknown"))
@@ -158,6 +170,7 @@ def build_graph(
     retriever: BaseRetriever | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     in_scope: Sequence[str] | None = None,
+    descriptions: Mapping[str, str] | None = None,
 ) -> CompiledStateGraph:
     """Wire the graph around the model that answers and the retriever that searches.
 
@@ -177,6 +190,12 @@ def build_graph(
     about the library is answered from the library rather than from the passages
     the search happened to return. A graph built without it searches the same way
     and says less about it.
+
+    `descriptions` is what the catalog says about those documents, for the ones
+    that have been described. It is what makes "what does each of them contain?"
+    answerable at all: the search returns passages of the documents that match the
+    question, and a document it did not return is otherwise one the answer has
+    nothing to say about.
     """
     contextualize_chain = contextualize_prompt | chat_model | StrOutputParser()
 
@@ -202,7 +221,9 @@ def build_graph(
         documents = await (retriever or get_retriever()).ainvoke(
             state["contextualized_question"]
         )
-        context, source_rows = format_context(documents, in_scope=in_scope)
+        context, source_rows = format_context(
+            documents, in_scope=in_scope, descriptions=descriptions
+        )
 
         return {
             "context": context,

@@ -43,7 +43,30 @@ def sync(
     print_report(report, dry_run=dry_run)
     if vectorstore is not None:
         warn_if_the_store_is_empty(report, vectorstore, db_path)
+    if not dry_run:
+        note_undescribed(db_path)
     return report
+
+
+def note_undescribed(db_path: Path) -> None:
+    """Say how many documents have no description yet, and which command writes them.
+
+    A description is what a question about the library is answered from, and the
+    sync does not write one: it needs no key and makes no model call. A library
+    just indexed therefore has none at all, which is exactly when the command
+    that writes them is worth knowing about.
+    """
+    from app.catalog import Catalog
+    from app.descriptions import undescribed
+
+    missing = undescribed(Catalog(db_path, create=False))
+    if not missing:
+        return
+
+    print(
+        f"\nNote: {len(missing)} indexed document(s) have no description yet. "
+        "`python -m scripts.describe` writes them, one model call each."
+    )
 
 
 def warn_if_the_store_is_empty(

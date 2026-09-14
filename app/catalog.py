@@ -250,6 +250,24 @@ class Catalog:
             path,
         )
 
+    def set_description(self, path: str, description: str) -> None:
+        """Write what the document is about, as one line.
+
+        A catalog write and nothing else: no vectors, no model, no file. The
+        description is a fact about the document, kept here because the console,
+        the page and the context the answer is written from all read the catalog
+        and none of them can work it out on its own.
+        """
+        self._write(
+            """
+            UPDATE documents
+               SET description = ?, updated_at = datetime('now')
+             WHERE path = ?
+            """,
+            (description, path),
+            path,
+        )
+
     def sources_in_category(
         self, category: str | None, *, include_descendants: bool = True
     ) -> list[str]:

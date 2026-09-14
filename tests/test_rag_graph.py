@@ -31,12 +31,18 @@ def make_graph(
     replies: list[str],
     documents: list[Document] | None = None,
     in_scope: tuple[str, ...] | None = None,
+    descriptions: dict[str, str] | None = None,
 ) -> tuple[Any, FakeChatModel, FakeRetriever]:
     model = FakeChatModel(replies=replies)
     retriever = FakeRetriever(
         [make_document()] if documents is None else documents
     )
-    graph = build_graph(chat_model=model, retriever=retriever, in_scope=in_scope)
+    graph = build_graph(
+        chat_model=model,
+        retriever=retriever,
+        in_scope=in_scope,
+        descriptions=descriptions,
+    )
     return graph, model, retriever
 
 
@@ -135,7 +141,57 @@ async def test_the_answer_is_written_knowing_which_documents_were_searched():
         "Documents searched: 2 — manuals/manual.pdf, reports/report.pdf"
         in answer_prompt
     )
-    assert "opens with the list of the documents" in answer_prompt
+    assert "opens with the documents the search was run over" in answer_prompt
+
+
+def test_the_context_carries_what_the_catalog_says_about_a_document():
+    """A passage is a sample; the description is not, and it is there either way."""
+    context, _ = format_context(
+        [make_document()],
+        in_scope=("manuals/manual.pdf", "reports/report.pdf"),
+        descriptions={"reports/report.pdf": "Last year's report."},
+    )
+
+    assert context.startswith(
+        "Documents searched: 2 — manuals/manual.pdf, reports/report.pdf\n"
+        "reports/report.pdf — Last year's report."
+    )
+
+
+def test_a_document_nothing_is_written_about_is_named_and_no_more():
+    """The list is the scope, so it cannot depend on a description being there."""
+    context, _ = format_context(
+        [make_document()],
+        in_scope=("manuals/manual.pdf",),
+        descriptions={"reports/report.pdf": "Last year's report."},
+    )
+
+    assert context.startswith("Documents searched: 1 — manuals/manual.pdf\n\n")
+
+
+@pytest.mark.asyncio
+async def test_the_answer_is_written_knowing_what_the_documents_contain():
+    """The question the passages cannot answer when they come from one document.
+
+    Asked what each document contains, a search returns passages of the ones that
+    match — so a document the search did not return is one the answer has nothing
+    to say about. Its description is what it has to say instead.
+    """
+    graph, model, _ = make_graph(
+        ["a standalone question", "the answer"],
+        in_scope=("manuals/manual.pdf", "reports/report.pdf"),
+        descriptions={
+            "manuals/manual.pdf": "A manual about the thing.",
+            "reports/report.pdf": "Last year's report.",
+        },
+    )
+
+    await ask(graph, "what does each of them contain?")
+
+    answer_prompt = str(model.prompts[-1])
+    assert "manuals/manual.pdf — A manual about the thing." in answer_prompt
+    assert "reports/report.pdf — Last year's report." in answer_prompt
+    assert "what the catalogue says about it" in answer_prompt
 
 
 @pytest.mark.asyncio
