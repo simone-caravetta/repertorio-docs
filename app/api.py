@@ -375,7 +375,9 @@ def as_branch(
 
 
 def as_document(record: DocumentRecord) -> dict[str, Any]:
-    """A row as the page shows it. `description` is empty until Phase 5 fills it."""
+    """A row as the page shows it. `description` is what `scripts.describe` wrote,
+    and None until it has been run for this document: a row with nothing to say
+    says nothing, and the page draws no line for it."""
     return {
         "path": record.path,
         "title": record.title,
