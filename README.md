@@ -150,6 +150,17 @@ search is done, while the answer is still being written. The selector at the top
 the next question is asked of, and prints the scope in the same words the console prints it
 in.
 
+Several documents can be asked about together, the way `--documents` does it from the
+console. The box at the left of a row ticks that document, and the box at the left of a
+category ticks every indexed document at or below it — the same set the server resolves that
+category to when it is picked from the selector, and never a document that is not indexed,
+which would make the whole group refuse. What is ticked is counted at the foot of the panel,
+where **Ask about these** starts the conversation on it and **Clear** empties it. The ticks
+stay after asking, so a group can be extended by ticking one more and asking again, and
+change when the scope changes, being the group in force as much as the one being built. A
+group that has been asked about appears in the selector like any other scope, named after the
+titles it holds, and coming back to it finds its conversation.
+
 Under each answer there is a line saying what was searched for. It is not always the question
 as it was typed: the question is first rewritten together with the conversation so far, so
 that "and for minors?" becomes a question that stands on its own. The line is what that

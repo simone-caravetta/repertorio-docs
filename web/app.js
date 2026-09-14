@@ -25,15 +25,34 @@ let scope = {};
  * document again finds the questions already asked about it. */
 let threads = {};
 
+/* The documents ticked in the catalog. They are not the scope: the scope is what
+ * a question is asked of, and these are the group being built for the next one.
+ * A tick cannot re-scope as it is made, or the first document ticked would take
+ * the scope and the second would replace it, and two could never be chosen. */
+const selected = new Set();
+
 /* A scope as one string, to look its conversation up by. The same documents
  * picked twice are the same conversation, and the whole library is the empty
- * one — which no category can be, a category name being something. */
+ * one — which no category can be, a category name being something. A group
+ * carries its paths as JSON rather than joined by a separator: a path is a file
+ * name, and may hold anything a file name can. */
 function scopeKey(of) {
   if (of.document != null) return `document:${of.document}`;
   if (of.category != null) return `category:${of.category}`;
-  const selected = of.documents || [];
-  if (selected.length) return `documents:${[...selected].sort().join("|")}`;
+  const chosen = of.documents || [];
+  if (chosen.length) return `documents:${JSON.stringify([...chosen].sort())}`;
   return "";
+}
+
+/* The paths a group's key or option carries, or null for a key from another
+ * version of this page, which is skipped rather than thrown over. */
+function pathsOf(value) {
+  try {
+    const paths = JSON.parse(value.slice("documents:".length));
+    return Array.isArray(paths) ? paths : null;
+  } catch {
+    return null;
+  }
 }
 
 function currentThread() {
@@ -54,6 +73,10 @@ const elements = {
   question: document.getElementById("question"),
   send: document.getElementById("send"),
   newThread: document.getElementById("new-thread"),
+  selection: document.getElementById("selection"),
+  selectionCount: document.getElementById("selection-count"),
+  askThese: document.getElementById("ask-these"),
+  clearSelection: document.getElementById("clear-selection"),
 };
 
 /* ---------------------------------------------------------------- storage */
@@ -84,6 +107,20 @@ function recall() {
 }
 
 /* ---------------------------------------------------------------- catalog */
+
+/* The catalog as it was last read: the panel is drawn from it, and so are the
+ * selector's options, which a group joins as soon as it exists. */
+let catalogView = { empty: true, categories: [], uncategorized: [] };
+
+/* What the panel is indexed by when it is drawn. `below` is the indexed
+ * documents at or below each category — the set the server reads that category
+ * as, so a category's tick and the same category picked from the selector are
+ * the same documents. The two maps after it are the boxes themselves, by path
+ * and by category name, so that one tick can move the others. */
+const below = new Map();
+const ticks = new Map();
+const headings = new Map();
+const titles = new Map();
 
 /* What the reader has put away, and how a heading and its contents follow it.
  * `controls` are the elements that say whether it is open: on a category that
@@ -121,7 +158,6 @@ function renderBranch(branch, depth, parent = elements.catalog) {
   const heading = document.createElement("button");
   heading.type = "button";
   heading.className = "category";
-  heading.style.paddingLeft = `${depth}rem`;
   heading.append(caret, span(branch.name || NO_CATEGORY, "name"));
   heading.addEventListener("click", () => {
     setOpen(key, !isOpen(key));
@@ -129,7 +165,15 @@ function renderBranch(branch, depth, parent = elements.catalog) {
   });
   show(key, body, [heading]);
 
-  parent.append(heading, body);
+  /* The tick cannot live in the heading: it is a button, and a button holds no
+   * other control. The indent is on the row, so that the tick is indented with
+   * the heading rather than beside it. */
+  const row = document.createElement("div");
+  row.className = "row";
+  row.style.paddingLeft = `${depth}rem`;
+  row.append(tickForCategory(branch.name) || span("", "tick blank"), heading);
+
+  parent.append(row, body);
 
   for (const record of branch.documents) {
     renderDocument(record, depth + 1, body);
@@ -137,6 +181,50 @@ function renderBranch(branch, depth, parent = elements.catalog) {
   for (const child of branch.children) {
     renderBranch(child, depth + 1, body);
   }
+}
+
+/* The indexed documents at or below every category, and the title of every
+ * document, taken from the view the panel is drawn from. Done before the panel
+ * rather than while it is drawn: a category is drawn before the documents it
+ * covers, and its tick needs them already.
+ *
+ * The set is the one the server resolves that category to: `sources_in_category`
+ * takes the indexed documents at or below it, so a category's tick and the same
+ * category picked from the selector ask about the same documents. A category
+ * with nothing indexed under it gets no tick at all — a group of nothing is not
+ * a scope, and picking it from the selector is already an error. */
+function indexBranch(branch) {
+  const paths = [];
+  for (const record of branch.documents) {
+    titles.set(record.path, record.title);
+    if (record.status === "indexed") paths.push(record.path);
+  }
+  for (const child of branch.children) paths.push(...indexBranch(child));
+  below.set(branch.name, paths);
+  return paths;
+}
+
+/* A category's tick, or nothing when there is nothing under it to take. It
+ * carries no state of its own: what is ticked is `selected`, and the box is
+ * drawn from it. */
+function tickForCategory(name) {
+  const paths = below.get(name) || [];
+  if (!paths.length) return null;
+
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.className = "tick";
+  box.title = `Every indexed document in ${name || NO_CATEGORY}`;
+  box.setAttribute("aria-label", box.title);
+  box.addEventListener("change", () => {
+    for (const path of paths) {
+      if (box.checked) selected.add(path);
+      else selected.delete(path);
+    }
+    refreshTicks();
+  });
+  headings.set(name, box);
+  return box;
 }
 
 /* A document's caret: the row asks about the document, so the caret is what
@@ -188,8 +276,10 @@ function renderDocument(record, depth, parent = elements.catalog) {
 
   const row = document.createElement("div");
   row.className = "row";
-  // A blank in the caret's place when there is nothing to open, so that the
-  // titles stay in one column whether a document has a description or not.
+  // A blank in the tick's place, and another in the caret's when there is
+  // nothing to open, so that the ticks and the titles each stay in one column
+  // whether a document can be chosen or described, or neither.
+  row.append(tickForDocument(record) || span("", "tick blank"));
   row.append(described ? caretFor(key, described) : span("", "caret blank"), button);
 
   group.append(row);
@@ -197,11 +287,74 @@ function renderDocument(record, depth, parent = elements.catalog) {
   parent.append(group);
 }
 
+/* A document's tick, and only for one that has vectors: `resolve_scope` looks
+ * every path of a group up and refuses the whole group if one of them is not
+ * indexed, so a document that is not indexed cannot be in one. The status beside
+ * the row is already saying why there is nothing here to tick. */
+function tickForDocument(record) {
+  if (record.status !== "indexed") return null;
+
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.className = "tick";
+  box.setAttribute("aria-label", `Include ${record.title}`);
+  box.addEventListener("change", () => {
+    if (box.checked) selected.add(record.path);
+    else selected.delete(record.path);
+    refreshTicks();
+  });
+  ticks.set(record.path, box);
+  return box;
+}
+
+/* --------------------------------------------------------------- selection */
+
+/* A category is ticked when everything under it is, and half-ticked when only
+ * some of it is. Read off `selected` rather than off the boxes below it, so the
+ * two cannot drift: the boxes are the drawn form of one set, not four copies of
+ * it. */
+function refreshTicks() {
+  for (const [path, box] of ticks) {
+    box.checked = selected.has(path);
+  }
+  for (const [name, box] of headings) {
+    const paths = below.get(name) || [];
+    const taken = paths.filter((path) => selected.has(path)).length;
+    box.checked = taken > 0 && taken === paths.length;
+    box.indeterminate = taken > 0 && taken < paths.length;
+  }
+
+  elements.selection.hidden = selected.size === 0;
+  elements.selectionCount.textContent =
+    selected.size === 1 ? "1 document" : `${selected.size} documents`;
+}
+
+/* The ticks are the group being built, or the group in force, and never a draft
+ * left over from the one before. So they follow the scope: choosing a group is
+ * choosing its documents back, and choosing anything else leaves them empty. */
+function tickTheScope() {
+  selected.clear();
+  for (const path of scope.documents || []) selected.add(path);
+  refreshTicks();
+}
+
+/* The ticks become the scope. Sorted, so that the same documents ticked in
+ * another order are the same group and find the same conversation. */
+function askAboutThese() {
+  chooseScope({ documents: [...selected].sort() });
+}
+
 /* ------------------------------------------------------------------ scope */
 
 async function chooseScope(next) {
   scope = next;
   remember();
+
+  // A group is a scope the selector offers, so the options are rebuilt before
+  // the selector is pointed at the one now on.
+  fillScopeSelect();
+  showScopeInSelect();
+  tickTheScope();
 
   await showConversation();
   await describeScope();
@@ -253,43 +406,94 @@ async function describeScope() {
 }
 
 function chooseDocument(path) {
-  selectDocument(path);
   chooseScope({ document: path });
 }
 
-/* A document is not one of the options the select was built with: it is picked
- * from the catalog, so its option is added the first time it is picked. */
-function selectDocument(path) {
-  const value = `document:${path}`;
-  const known = [...elements.scope.options].some((one) => one.value === value);
-  if (!known) elements.scope.append(option(value, path));
-  elements.scope.value = value;
-}
-
-function fillScopeSelect(view) {
+/* The select offers every scope there is: the whole library, which is no
+ * restriction at all, then the groups of documents and the single documents a
+ * conversation has been had about, then every category. Rebuilt rather than
+ * filled once — starting a conversation is what puts a scope among them — so the
+ * listener is attached outside, or every rebuild would add another. */
+function fillScopeSelect() {
   elements.scope.replaceChildren(option("", "the whole library"));
-  for (const branch of view.categories || []) {
+  for (const [value, paths] of groups()) {
+    elements.scope.append(option(value, groupLabel(paths), paths.join("\n")));
+  }
+  for (const path of offeredDocuments()) {
+    elements.scope.append(option(documentValue(path), documentLabel(path), path));
+  }
+  for (const branch of catalogView.categories || []) {
     addCategoryOptions(branch);
   }
+}
 
-  /* Every option in the select is a scope, a document's included. That one is
-   * added the first time the document is picked from the catalog, so that the
-   * select can show what was picked, and from then on it is an option like the
-   * others: leaving it inert left the select showing a document that the scope
-   * was not on. Setting the value from `selectDocument` does not fire this, so
-   * anything arriving here was chosen by the reader. */
-  elements.scope.addEventListener("change", () => {
-    const value = elements.scope.value;
-    if (value.startsWith("document:")) {
-      chooseScope({ document: value.slice("document:".length) });
-      return;
-    }
-    if (value.startsWith("category:")) {
-      chooseScope({ category: value.slice("category:".length) });
-      return;
-    }
-    chooseScope({});
-  });
+/* The groups the select should offer, as the value its option carries and the
+ * paths in it. A group is one when a conversation has been had about it — read
+ * off `threads`, whose `documents:` keys are exactly the groups — or when it is
+ * the group in force, which is one the reader has just built and not yet asked
+ * anything of. There is no list of groups to keep in step with this, and a
+ * group's option lives exactly as long as its conversation, which is the rule
+ * every other scope already follows. */
+function groups() {
+  const known = new Map();
+  for (const key of Object.keys(threads)) {
+    const paths = key.startsWith("documents:") ? pathsOf(key) : null;
+    if (paths) known.set(key, paths);
+  }
+  if ((scope.documents || []).length) {
+    known.set(scopeKey(scope), [...scope.documents].sort());
+  }
+  return known;
+}
+
+/* The documents the select should offer: the ones a conversation has been had
+ * about, and the one in force, which is one just picked from the catalog and not
+ * yet asked anything of. The same rule as a group of them — what you have been
+ * on is what you can go back to — and the reason a document picked from the
+ * catalog stays an option when the scope moves elsewhere. */
+function offeredDocuments() {
+  const paths = Object.keys(threads)
+    .filter((key) => key.startsWith("document:"))
+    .map((key) => key.slice("document:".length));
+  if (scope.document != null && !paths.includes(scope.document)) {
+    paths.push(scope.document);
+  }
+  return paths;
+}
+
+function documentValue(path) {
+  return `document:${path}`;
+}
+
+/* A document as the selector names it: the title the panel shows, and the path
+ * in the tooltip, which is what identifies it. A document the catalog no longer
+ * holds has no title to give, and is named by its path. */
+function documentLabel(path) {
+  return titles.get(path) || path;
+}
+
+/* A group as the reader knows it: the first two titles, and how many more. The
+ * server calls a group "3 documents", which is the same string for every group
+ * of three. */
+function groupLabel(paths) {
+  const names = paths.map((path) => documentLabel(path));
+  if (names.length <= 2) return names.join(", ");
+  return `${names.slice(0, 2).join(", ")} +${names.length - 2}`;
+}
+
+/* Point the select at the scope in force. Every scope it can be on is among the
+ * options by now: a group by `groups`, a document by `offeredDocuments`, and a
+ * category and the whole library always. Setting the value from here does not
+ * fire `change`, so anything arriving there was chosen by the reader. */
+function showScopeInSelect() {
+  if (scope.document != null) {
+    elements.scope.value = documentValue(scope.document);
+  } else if (scope.category !== undefined) {
+    elements.scope.value = `category:${scope.category}`;
+  } else {
+    const paths = scope.documents || [];
+    elements.scope.value = paths.length ? scopeKey(scope) : "";
+  }
 }
 
 function addCategoryOptions(branch) {
@@ -476,10 +680,11 @@ function span(text, className) {
   return element;
 }
 
-function option(value, text) {
+function option(value, text, title = null) {
   const element = document.createElement("option");
   element.value = value;
   element.textContent = text;
+  if (title) element.title = title;
   return element;
 }
 
@@ -503,6 +708,28 @@ elements.composer.addEventListener("submit", (event) => {
 
 elements.newThread.addEventListener("click", () => newConversation());
 
+elements.askThese.addEventListener("click", () => askAboutThese());
+
+elements.clearSelection.addEventListener("click", () => {
+  selected.clear();
+  refreshTicks();
+});
+
+/* Every option in the select is a scope, a document's included. */
+elements.scope.addEventListener("change", () => {
+  const value = elements.scope.value;
+  if (value.startsWith("document:")) {
+    chooseScope({ document: value.slice("document:".length) });
+    return;
+  }
+  if (value.startsWith("category:")) {
+    chooseScope({ category: value.slice("category:".length) });
+    return;
+  }
+  const paths = value.startsWith("documents:") ? pathsOf(value) : null;
+  chooseScope(paths ? { documents: paths } : {});
+});
+
 // The question box grows with the question, up to a point.
 elements.question.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
@@ -514,15 +741,11 @@ elements.question.addEventListener("keydown", (event) => {
 async function start() {
   recall();
 
-  const catalog = await fetch("/api/catalog").then((one) => one.json());
-  fillScopeSelect(catalog);
-  renderCatalog(catalog);
-
-  if (scope.document) {
-    selectDocument(scope.document);
-  } else if (scope.category !== undefined) {
-    elements.scope.value = `category:${scope.category}`;
-  }
+  catalogView = await fetch("/api/catalog").then((one) => one.json());
+  renderCatalog();
+  fillScopeSelect();
+  showScopeInSelect();
+  tickTheScope();
 
   await describeScope();
   await showConversation();
@@ -530,23 +753,36 @@ async function start() {
   elements.question.focus();
 }
 
-function renderCatalog(view) {
+function renderCatalog() {
+  below.clear();
+  ticks.clear();
+  headings.clear();
+  titles.clear();
   elements.catalog.replaceChildren();
 
-  if (view.empty) {
+  if (catalogView.empty) {
     elements.catalog.append(
       line("No catalog here yet. Run a sync first.", "empty")
     );
     return;
   }
 
-  for (const branch of view.categories) renderBranch(branch, 0);
-  if (view.uncategorized.length) {
-    // The documents filed under no category are a group like any other, and an
-    // empty name is what a category cannot be — which is what makes it theirs,
-    // and the key the panel remembers them by.
-    renderBranch({ name: "", documents: view.uncategorized, children: [] }, 0);
+  /* The documents filed under no category are a group like any other, and an
+   * empty name is what a category cannot be — which is what makes it theirs,
+   * and the key the panel remembers them by. */
+  const branches = [...catalogView.categories];
+  if (catalogView.uncategorized.length) {
+    branches.push({
+      name: "",
+      documents: catalogView.uncategorized,
+      children: [],
+    });
   }
+
+  // Every branch indexed before any of them is drawn: a category's tick is
+  // built from what is under it, and it is drawn before that.
+  for (const branch of branches) indexBranch(branch);
+  for (const branch of branches) renderBranch(branch, 0, elements.catalog);
 }
 
 start();

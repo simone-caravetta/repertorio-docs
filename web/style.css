@@ -174,9 +174,10 @@ h2 {
 
 .category {
   display: flex;
+  flex: 1;
+  min-width: 0;
   gap: 0.35rem;
   align-items: baseline;
-  width: 100%;
   margin: 0.6rem 0 0.2rem;
   padding: 0.15rem 0.4rem 0.15rem 0;
   background: none;
@@ -192,7 +193,34 @@ h2 {
   background: var(--ground);
 }
 
-.record .row {
+.category .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The tick that puts a document, or everything under a category, into the group
+ * being built. It comes before the caret so that the ticks of a level stand in a
+ * column of their own, and the indent of the tree is on the row it sits in. */
+.tick {
+  flex: none;
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Nothing to tick: the space is kept so that the ticks and the titles each stay
+ * in one column whether a document can be chosen or not. */
+.tick.blank {
+  visibility: hidden;
+}
+
+/* A row of the tree: a tick, a control, and what it is about. A document's row
+ * and a category's heading are both one. */
+.row {
   display: flex;
   align-items: baseline;
 }
@@ -249,6 +277,42 @@ h2 {
 
 .empty {
   color: var(--quiet);
+}
+
+/* What is ticked, and the two things that can be done with it. It sits at the
+ * foot of the panel, where the ticks are, and appears only while there is
+ * something ticked. `[hidden]` is stated for the same reason the tree states it:
+ * this rule's `display` would otherwise keep it on screen. */
+.selection {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: baseline;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.selection[hidden] {
+  display: none;
+}
+
+.selection .count {
+  flex: 1;
+  color: var(--quiet);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The one control that makes the ticks the scope. */
+#ask-these {
+  padding: 0.15rem 0.6rem;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--paper);
+  font-size: 0.8rem;
+  cursor: pointer;
 }
 
 .chat {

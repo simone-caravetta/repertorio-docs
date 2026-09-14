@@ -174,6 +174,17 @@ about them.
       covers as well as with the passages found: which documents there are is not a thing a
       similarity search can say, and asked "che documenti hai?" the page answered with the one
       document that happened to be retrieved.
+- [x] Several documents at once, ticked in the catalog panel, which the server has taken since
+      `resolve_scope` was written and the page could not ask for. A category's tick takes every
+      indexed document at or below it, so the tick and the same category picked from the
+      selector are one set; a document that is not indexed has no tick, because one of those in
+      a group makes the whole group refuse. The ticks accumulate and a bar at the foot of the
+      panel applies them, rather than applying themselves as they are made, which would let the
+      first tick take the scope and the second replace it and two documents never be chosen.
+      **New conversation** keeps meaning only what it meant — forget this scope's history.
+      Groups are not named and not a table: a group is offered by the selector while it has a
+      conversation, read off the threads the page already keeps, so there is nothing that only
+      grows and nothing to keep in step.
 - [x] Persistent checkpointer (SQLite) so conversations survive a restart: `build_graph` takes
       one, the server opens `data/conversations.sqlite3` for the life of the process, and a
       reloaded page reads its conversation back through `GET /api/threads/{id}`. The page
