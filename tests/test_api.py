@@ -416,6 +416,44 @@ def test_the_rewriter_is_told_not_to_name_a_document_in_the_query(
     assert "Never name a document in the query" in rewriting_prompt
 
 
+def test_the_answer_is_told_which_documents_the_question_was_asked_of(
+    db_path: Path, config: Settings
+):
+    """The blind spot of a search: a question about the library.
+
+    "What documents do you have?" matches no passage, so the whole-library search
+    returns the chunks closest to it and nothing about the library at all. The
+    scope's own list is handed to the graph beside the retriever, which is what
+    the answer is written from instead.
+    """
+    file_document(db_path, MANUAL, category="manuals")
+    file_document(db_path, REPORT, category="reports")
+    harness = harness_for(config, replies=["a standalone question", "the answer"])
+
+    with harness.client() as client:
+        ask(client, "what documents do you have?")
+
+    written_with = str(harness.model.prompts[1])
+    assert f"Documents searched: 2 — {MANUAL}, {REPORT}" in written_with
+
+
+def test_a_scoped_answer_is_told_only_about_the_documents_it_searched(
+    db_path: Path, config: Settings
+):
+    file_document(db_path, MANUAL, category="manuals")
+    file_document(db_path, REPORT, category="reports")
+    harness = harness_for(config, replies=["a standalone question", "the answer"])
+
+    with harness.client() as client:
+        ask(client, "what does it say?", document=MANUAL)
+
+    written_with = str(harness.model.prompts[1])
+    assert f"Documents searched: 1 — {MANUAL}" in written_with
+    # Nothing of the library it was not asked about, or the scope would be a
+    # narrower search reported as a wider one.
+    assert REPORT not in written_with
+
+
 def test_a_question_with_nothing_retrieved_streams_no_sources(
     db_path: Path, config: Settings
 ):

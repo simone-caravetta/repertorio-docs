@@ -24,21 +24,47 @@ from app.vectorstore import WholeDocumentRetriever, build_retriever, get_vectors
 class Scope:
     """Which documents a question is asked of.
 
-    `sources` is None for the whole library, and a tuple of document paths
-    otherwise — the same value the chunks carry as `source`, which is what the
-    vector store is filtered by. `chunks` is the chunk count of the one document
-    a whole-document scope reads, and is None otherwise.
+    `sources` is what the search is narrowed to — the same value the chunks carry
+    as `source`, which is what the vector store is filtered by — and None is the
+    whole library, which is not a list of everything but no restriction at all.
+    `documents` is what the scope covers, which is the same list except in that
+    one case: the whole library has no filter to read them off, so they come from
+    the catalog. The two are kept apart because they answer different questions.
+    A search wants to know what to filter by, and an answer wants to be told what
+    was searched: asked which documents there are, a model holding nothing but the
+    passages in front of it names the one they came from. `chunks` is the chunk
+    count of the one document a whole-document scope reads, and is None otherwise.
     """
 
     sources: tuple[str, ...] | None
     label: str
+    documents: tuple[str, ...] = ()
     whole_document: bool = False
     chunks: int | None = None
 
 
-def whole_library() -> Scope:
-    """Everything indexed, which is what a question without a scope searches."""
-    return Scope(sources=None, label="whole library")
+def whole_library(catalog: Catalog) -> Scope:
+    """Everything indexed, which is what a question without a scope searches.
+
+    Asked of the catalog, not left empty: the search is given no filter, but the
+    documents it ends up covering are read from the catalog all the same, because
+    the answer has to be able to say what was searched.
+    """
+    return Scope(
+        sources=None, label="whole library", documents=_indexed(catalog)
+    )
+
+
+def _indexed(catalog: Catalog) -> tuple[str, ...]:
+    """Every document a search can reach, in the catalog's own order.
+
+    The rule `sources_in_category` follows, and for the same reason: a document
+    that is trashed or failed to index has no vectors, so naming it would describe
+    a search that cannot happen.
+    """
+    return tuple(
+        record.path for record in catalog.all() if record.status == "indexed"
+    )
 
 
 def as_source(path: str, documents_dir: Path) -> str:
@@ -101,9 +127,9 @@ def resolve_scope(
             _lookup(catalog, as_source(path, config.documents_dir)).path
             for path in documents
         )
-        return Scope(sources=sources, label=_documents(len(sources)))
+        return Scope(sources=sources, label=_documents(len(sources)), documents=sources)
 
-    return whole_library()
+    return whole_library(catalog)
 
 
 def build_scoped_retriever(scope: Scope) -> BaseRetriever:
@@ -141,7 +167,11 @@ def _category_scope(catalog: Catalog, name: str | None) -> Scope:
         raise LookupError(f"No indexed documents in {_name_of(name)}.{hint}")
 
     named = f"category {name}" if name else "no category"
-    return Scope(sources=sources, label=f"{named} ({_documents(len(sources))})")
+    return Scope(
+        sources=sources,
+        label=f"{named} ({_documents(len(sources))})",
+        documents=sources,
+    )
 
 
 def _one_document_scope(record: DocumentRecord, config: Settings) -> Scope:
@@ -166,6 +196,7 @@ def _one_document_scope(record: DocumentRecord, config: Settings) -> Scope:
     return Scope(
         sources=(record.path,),
         label=label,
+        documents=(record.path,),
         whole_document=whole,
         chunks=record.chunk_count if whole else None,
     )

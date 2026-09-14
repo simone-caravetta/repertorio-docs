@@ -28,7 +28,35 @@ def test_a_question_with_no_scope_is_asked_of_the_whole_library(
 
 
 def test_whole_library_is_the_scope_a_console_starts_on() -> None:
-    assert whole_library() == resolve_scope(Catalog(":memory:"), config=make_settings())
+    catalog = Catalog(":memory:")
+
+    assert whole_library(catalog) == resolve_scope(catalog, config=make_settings())
+
+
+def test_the_whole_library_names_the_documents_it_covers(catalog: Catalog) -> None:
+    """No filter is what the search gets; the documents are still known."""
+    indexed(catalog, "manuals/a.pdf")
+    indexed(catalog, "reports/c.pdf")
+
+    scope = resolve_scope(catalog, config=make_settings())
+
+    assert scope.sources is None
+    assert scope.documents == ("manuals/a.pdf", "reports/c.pdf")
+
+
+def test_the_whole_library_leaves_out_what_a_search_cannot_reach(
+    catalog: Catalog,
+) -> None:
+    """A document with no vectors is not one of the documents there are."""
+    indexed(catalog, "manuals/a.pdf")
+    catalog.add_file("manuals/b.pdf", "b", category="manuals")
+    catalog.record_failed("manuals/b.pdf", "No text extracted")
+    catalog.add_file("manuals/c.pdf", "c", category="manuals")
+    catalog.trash("manuals/c.pdf")
+
+    scope = resolve_scope(catalog, config=make_settings())
+
+    assert scope.documents == ("manuals/a.pdf",)
 
 
 def test_a_category_brings_its_documents_and_the_ones_below(
@@ -41,6 +69,9 @@ def test_a_category_brings_its_documents_and_the_ones_below(
     scope = resolve_scope(catalog, config=make_settings(), category="manuals")
 
     assert scope.sources == ("manuals/a.pdf", "manuals/ancient/b.pdf")
+    # The narrowed scope covers exactly what it filters by, and the answer is
+    # told the same list the search was given.
+    assert scope.documents == scope.sources
     assert scope.label == "category manuals (2 documents)"
 
 

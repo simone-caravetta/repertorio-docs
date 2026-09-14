@@ -28,13 +28,16 @@ def make_document(page: int | None = 11) -> Document:
 
 
 def make_graph(
-    replies: list[str], documents: list[Document] | None = None
+    replies: list[str],
+    documents: list[Document] | None = None,
+    in_scope: tuple[str, ...] | None = None,
 ) -> tuple[Any, FakeChatModel, FakeRetriever]:
     model = FakeChatModel(replies=replies)
     retriever = FakeRetriever(
         [make_document()] if documents is None else documents
     )
-    return build_graph(chat_model=model, retriever=retriever), model, retriever
+    graph = build_graph(chat_model=model, retriever=retriever, in_scope=in_scope)
+    return graph, model, retriever
 
 
 async def ask(graph: Any, question: str) -> dict[str, Any]:
@@ -57,6 +60,27 @@ def test_a_chunk_without_a_page_or_a_source_still_renders():
 
     assert context == "[Source: unknown]\ntext"
     assert rows == [{"source": "unknown", "page": None}]
+
+
+def test_the_context_opens_with_the_documents_the_search_was_run_over():
+    context, rows = format_context(
+        [make_document()], in_scope=("manuals/manual.pdf", "reports/report.pdf")
+    )
+
+    assert context == (
+        "Documents searched: 2 — manuals/manual.pdf, reports/report.pdf\n\n"
+        "[Source: manuals/manual.pdf | Page: 12]\nThe thing is explained here."
+    )
+    # The line is what was searched, not where a passage came from: the sources
+    # to cite are still the passages, and nothing else.
+    assert rows == [{"source": "manuals/manual.pdf", "page": 12}]
+
+
+def test_a_context_that_was_not_told_a_scope_claims_none():
+    """A graph built without one searches the same and says less about it."""
+    context, _ = format_context([make_document()], in_scope=())
+
+    assert context.startswith("[Source: manuals/manual.pdf")
 
 
 @pytest.mark.asyncio
@@ -88,6 +112,30 @@ async def test_the_answer_prompt_carries_the_retrieved_context():
     assert "manuals/manual.pdf" in answer_prompt
     assert "Page: 12" in answer_prompt
     assert "The thing is explained here." in answer_prompt
+
+
+@pytest.mark.asyncio
+async def test_the_answer_is_written_knowing_which_documents_were_searched():
+    """"Which documents do you have?" cannot be answered from the passages.
+
+    It matches none of them, so a search over the library returns the chunks
+    closest to the question and nothing about the library; a model with only
+    those in front of it names the one they came from. The scope's list is what
+    it is answered from instead, and the prompt is told the list is there.
+    """
+    graph, model, _ = make_graph(
+        ["a standalone question", "the answer"],
+        in_scope=("manuals/manual.pdf", "reports/report.pdf"),
+    )
+
+    await ask(graph, "what documents do you have?")
+
+    answer_prompt = str(model.prompts[-1])
+    assert (
+        "Documents searched: 2 — manuals/manual.pdf, reports/report.pdf"
+        in answer_prompt
+    )
+    assert "opens with the list of the documents" in answer_prompt
 
 
 @pytest.mark.asyncio

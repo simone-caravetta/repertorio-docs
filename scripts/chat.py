@@ -37,10 +37,13 @@ async def run_chat(
             documents=documents or [],
         )
         # A scope is a different retriever handed to the same graph, which is why
-        # the graph itself is untouched by any of this.
+        # the graph itself is untouched by any of this. The documents go with it
+        # so that the answer can say what was searched, which is the one thing
+        # the retrieved passages cannot say.
         graph = build_graph(
             chat_model=build_chat_model(),
             retriever=build_scoped_retriever(scope),
+            in_scope=scope.documents,
         )
     except (LookupError, RuntimeError) as exc:
         # A key that is missing, a category that is not there: a message to read,

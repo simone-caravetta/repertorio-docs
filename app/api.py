@@ -148,6 +148,9 @@ def create_app(
             chat_model=request.app.state.model,
             retriever=make_retriever(scope),
             checkpointer=saver,
+            # What the answer is told it searched. The scope knows it for every
+            # scope, the whole library included, and the passages do not.
+            in_scope=scope.documents,
         )
 
         return StreamingResponse(

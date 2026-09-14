@@ -121,6 +121,11 @@ that "and for minors?" becomes a question that stands on its own. The line is wh
 rewrite produced, and it is worth reading when an answer seems to have come from the wrong
 document.
 
+The answer is told which documents were searched and not only which passages were found,
+which is what makes a question about the library itself answerable. Asked what documents
+there are, a search returns the passages closest to the question — and a question that
+matches none of them returns one document's passages and nothing about the others.
+
 Conversations are kept in `data/conversations.sqlite3`, so a conversation is still there
 after the server is restarted. Changing the scope starts a new one: a conversation's history
 is the history of questions about those documents.

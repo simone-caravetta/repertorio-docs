@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from functools import lru_cache
 from typing import Any
 
@@ -63,6 +64,11 @@ answer, say so clearly instead of guessing, and do not fill the gaps from your
 own knowledge. Never invent facts, figures, names, procedures or rules that are
 not in the context.
 
+The context opens with the list of the documents the search was run over, and
+that list is part of the context. Answer from it when the question is about the
+library itself — which documents there are, how many — and from the passages
+when it is about what the documents say.
+
 Write the answer in the language of the question, not the language of the
 passages: a question asked in English gets an English answer even when every
 passage is in another language. Do not change language part way through, and
@@ -86,10 +92,27 @@ Context:
 ])
 
 
-def format_context(documents: list[Document]) -> tuple[str, list[dict[str, Any]]]:
-    """Render retrieved chunks as the context block, beside the sources to cite."""
+def format_context(
+    documents: list[Document],
+    *,
+    in_scope: Sequence[str] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Render retrieved chunks as the context block, beside the sources to cite.
+
+    `in_scope` opens the block with the documents the search was run over. It is
+    the one thing the passages cannot say: a similarity search returns what is
+    closest to the question, so a question about the library itself — which
+    documents there are, how many — is answered by whatever the search happened
+    to hit, and a model holding only those names them as the library. The scope
+    knows better, and this is where the answer is told.
+    """
     context_parts: list[str] = []
     source_rows: list[dict[str, Any]] = []
+
+    if in_scope:
+        context_parts.append(
+            f"Documents searched: {len(in_scope)} — " + ", ".join(in_scope)
+        )
 
     for doc in documents:
         source = str(doc.metadata.get("source", "unknown"))
@@ -134,6 +157,7 @@ def build_graph(
     chat_model: BaseChatModel,
     retriever: BaseRetriever | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
+    in_scope: Sequence[str] | None = None,
 ) -> CompiledStateGraph:
     """Wire the graph around the model that answers and the retriever that searches.
 
@@ -147,6 +171,12 @@ def build_graph(
     it is a session, and its history is not worth a file. A server hands in a
     persistent one instead, because a conversation that ends when the process
     does is the thing it exists not to have.
+
+    `in_scope` is the documents the searches are run over, for a caller that has
+    resolved a scope and knows: it is what the answer is told, so that a question
+    about the library is answered from the library rather than from the passages
+    the search happened to return. A graph built without it searches the same way
+    and says less about it.
     """
     contextualize_chain = contextualize_prompt | chat_model | StrOutputParser()
 
@@ -172,7 +202,7 @@ def build_graph(
         documents = await (retriever or get_retriever()).ainvoke(
             state["contextualized_question"]
         )
-        context, source_rows = format_context(documents)
+        context, source_rows = format_context(documents, in_scope=in_scope)
 
         return {
             "context": context,

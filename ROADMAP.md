@@ -169,7 +169,10 @@ about them.
       the string `resolve_scope` produces, character for character the one the console prints.
       Under each answer the page shows the query the search was run on, which the graph has
       already rewritten with the conversation in hand and which is therefore not always the
-      question as it was typed.
+      question as it was typed. The answer is written with the list of documents the scope
+      covers as well as with the passages found: which documents there are is not a thing a
+      similarity search can say, and asked "che documenti hai?" the page answered with the one
+      document that happened to be retrieved.
 - [x] Persistent checkpointer (SQLite) so conversations survive a restart: `build_graph` takes
       one, the server opens `data/conversations.sqlite3` for the life of the process, and a
       reloaded page reads its conversation back through `GET /api/threads/{id}`.
@@ -210,7 +213,9 @@ doubles as the tool that tells whether a local model is good enough for a given 
       question is rewritten with that answer in the conversation — which is how a question
       asked of the whole library comes back having searched one document. The prompt of
       `contextualize` was changed to forbid naming a document in the query, which stops that
-      particular road; it does not stop a passage being retrieved and used on no evidence.
+      particular road, and the answer is now told which documents were searched, which is what
+      makes a question about the library answerable. Neither stops a passage being retrieved
+      and used on no evidence.
 - [ ] Small-to-big retrieval: match on small chunks, hand the surrounding section to the
       model.
 - [ ] Multi-query expansion with reciprocal rank fusion.
