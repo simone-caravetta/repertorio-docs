@@ -272,9 +272,18 @@ function fillScopeSelect(view) {
     addCategoryOptions(branch);
   }
 
+  /* Every option in the select is a scope, a document's included. That one is
+   * added the first time the document is picked from the catalog, so that the
+   * select can show what was picked, and from then on it is an option like the
+   * others: leaving it inert left the select showing a document that the scope
+   * was not on. Setting the value from `selectDocument` does not fire this, so
+   * anything arriving here was chosen by the reader. */
   elements.scope.addEventListener("change", () => {
     const value = elements.scope.value;
-    if (value.startsWith("document:")) return; // picked from the catalog
+    if (value.startsWith("document:")) {
+      chooseScope({ document: value.slice("document:".length) });
+      return;
+    }
     if (value.startsWith("category:")) {
       chooseScope({ category: value.slice("category:".length) });
       return;
