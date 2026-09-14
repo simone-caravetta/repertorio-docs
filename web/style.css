@@ -73,6 +73,28 @@ select {
   font-variant-numeric: tabular-nums;
 }
 
+/* The one control that throws a conversation away. It sits beside the scope
+ * because a conversation is kept by its scope, and is out of reach until there
+ * is one to throw away. */
+button.quiet {
+  padding: 0.15rem 0.5rem;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--quiet);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+button.quiet:hover:not(:disabled) {
+  background: var(--ground);
+}
+
+button.quiet:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .refused {
   color: var(--failed);
 }

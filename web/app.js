@@ -16,7 +16,29 @@ const NO_CATEGORY = "no category";
 
 // Whole library, a category, or one document. Sent to the server as it is.
 let scope = {};
-let threadId = null;
+
+/* A conversation per scope, kept by the scope it is about. A question is
+ * answered with the history of its own scope and of no other, because the graph
+ * rewrites each question with the conversation in hand: the history of a
+ * question about one document is not context for a question about another, and
+ * given it the rewrite names the document that was being discussed. Picking a
+ * document again finds the questions already asked about it. */
+let threads = {};
+
+/* A scope as one string, to look its conversation up by. The same documents
+ * picked twice are the same conversation, and the whole library is the empty
+ * one — which no category can be, a category name being something. */
+function scopeKey(of) {
+  if (of.document != null) return `document:${of.document}`;
+  if (of.category != null) return `category:${of.category}`;
+  const selected = of.documents || [];
+  if (selected.length) return `documents:${[...selected].sort().join("|")}`;
+  return "";
+}
+
+function currentThread() {
+  return threads[scopeKey(scope)] || null;
+}
 
 /* What the reader has put away in the catalog: a category by its name, a
  * document by its path. Kept with the scope, so the panel opens the way it was
@@ -31,6 +53,7 @@ const elements = {
   composer: document.getElementById("composer"),
   question: document.getElementById("question"),
   send: document.getElementById("send"),
+  newThread: document.getElementById("new-thread"),
 };
 
 /* ---------------------------------------------------------------- storage */
@@ -38,7 +61,7 @@ const elements = {
 function remember() {
   localStorage.setItem(
     STORAGE_KEY,
-    JSON.stringify({ scope, threadId, collapsed: [...collapsed] })
+    JSON.stringify({ scope, threads, collapsed: [...collapsed] })
   );
 }
 
@@ -47,8 +70,13 @@ function recall() {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
     if (saved && typeof saved === "object") {
       scope = saved.scope || {};
-      threadId = saved.threadId || null;
+      threads = saved.threads || {};
       collapsed = new Set(saved.collapsed || []);
+      if (!saved.threads && saved.threadId) {
+        // Written before conversations were kept one to a scope, when the one
+        // thread it held was the thread of the scope it was on.
+        threads[scopeKey(scope)] = saved.threadId;
+      }
     }
   } catch {
     // A value from another version of this page: start over rather than fail.
@@ -172,18 +200,36 @@ function renderDocument(record, depth, parent = elements.catalog) {
 /* ------------------------------------------------------------------ scope */
 
 async function chooseScope(next) {
-  // A new conversation, and it says so: the history of the last one was a
-  // history of questions about other documents.
   scope = next;
-  threadId = null;
   remember();
 
+  await showConversation();
+  await describeScope();
+}
+
+/* The conversation of the scope that is now on: the one already had about these
+ * documents, read back from the server, or an empty one that says so. Moving to
+ * another document and coming back finds the questions asked about the first,
+ * which is what keeping the thread by its scope buys. */
+async function showConversation() {
   elements.messages.replaceChildren();
-  if (!isEmpty(next)) {
+
+  const thread = currentThread();
+  elements.newThread.disabled = thread === null;
+  if (thread) {
+    await loadThread(thread);
+  } else if (!isEmpty(scope)) {
     elements.messages.append(line("— new conversation —", "notice"));
   }
+}
 
-  await describeScope();
+/* Forget the conversation of this scope and leave the thread where it is: the
+ * next question asks for a new one. Every question is rewritten with the ones
+ * before it, so a history that is kept is one there has to be a way out of. */
+function newConversation() {
+  delete threads[scopeKey(scope)];
+  remember();
+  showConversation();
 }
 
 async function describeScope() {
@@ -253,6 +299,11 @@ function addCategoryOptions(branch) {
 async function ask(question) {
   const bubble = addTurn("assistant");
 
+  /* The scope this question is asked of, held here rather than read again when
+   * the answer arrives: the thread it is filed under is the thread of the scope
+   * it was asked on, even if the reader has moved to another one by then. */
+  const asked = scope;
+
   // What was searched for and what came back, under the answer as it is written.
   // Both are built empty and filled when their event lands, so that the query is
   // above the sources whatever order they arrive in.
@@ -274,7 +325,7 @@ async function ask(question) {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, thread_id: threadId, ...scope }),
+      body: JSON.stringify({ question, thread_id: currentThread(), ...asked }),
     });
 
     if (!response.ok) {
@@ -285,7 +336,10 @@ async function ask(question) {
 
     await readStream(response, (name, data) => {
       if (name === "thread") {
-        threadId = data.thread_id;
+        threads[scopeKey(asked)] = data.thread_id;
+        // Asked again rather than set: the answer may have started on one scope
+        // and still be arriving after the reader has moved to another.
+        elements.newThread.disabled = currentThread() === null;
         remember();
       } else if (name === "query") {
         query.textContent = SEARCHED + data.query;
@@ -346,8 +400,8 @@ function parseEvent(raw) {
   return { name, data: JSON.parse(data.join("\n")) };
 }
 
-async function loadThread() {
-  const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}`);
+async function loadThread(id) {
+  const response = await fetch(`/api/threads/${encodeURIComponent(id)}`);
   if (!response.ok) return;
 
   const thread = await response.json();
@@ -356,7 +410,7 @@ async function loadThread() {
   }
 
   // The query and the sources of the last turn, which is all the state holds:
-  // the ones before were shown when they were asked. A reloaded conversation
+  // the ones before were shown when they were asked. A conversation read back
   // says the same thing about itself as a live one.
   if (!thread.query && !thread.sources.length) return;
 
@@ -438,6 +492,8 @@ elements.composer.addEventListener("submit", (event) => {
   ask(question);
 });
 
+elements.newThread.addEventListener("click", () => newConversation());
+
 // The question box grows with the question, up to a point.
 elements.question.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
@@ -460,7 +516,7 @@ async function start() {
   }
 
   await describeScope();
-  if (threadId) await loadThread();
+  await showConversation();
 
   elements.question.focus();
 }

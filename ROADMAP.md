@@ -176,7 +176,10 @@ about them.
       document that happened to be retrieved.
 - [x] Persistent checkpointer (SQLite) so conversations survive a restart: `build_graph` takes
       one, the server opens `data/conversations.sqlite3` for the life of the process, and a
-      reloaded page reads its conversation back through `GET /api/threads/{id}`.
+      reloaded page reads its conversation back through `GET /api/threads/{id}`. The page
+      keeps one conversation per scope rather than one running conversation, so moving
+      between documents and back does not lose the questions asked about each, and **New
+      conversation** beside the scope drops the thread of the scope it is on.
       `get_state_history` is the mechanism the same checkpointer would give time travel
       through, and is not used yet.
 - [x] Stream the sources as soon as retrieval completes, instead of at the end of the answer:

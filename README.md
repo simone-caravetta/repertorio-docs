@@ -161,8 +161,12 @@ them, and not only which passages were found — see [Descriptions](#description
 what makes a question about the library itself answerable.
 
 Conversations are kept in `data/conversations.sqlite3`, so a conversation is still there
-after the server is restarted. Changing the scope starts a new one: a conversation's history
-is the history of questions about those documents.
+after the server is restarted. Each scope has its own: ask about a document, move to another
+one and come back, and the questions you asked about the first are still there. It is one
+conversation per scope rather than one running conversation, because every question is
+rewritten together with the conversation it is asked in, and the history of a question about
+one document is not context for a question about another. **New conversation**, beside the
+scope, starts one over.
 
 The server listens on `127.0.0.1` only. `--host 0.0.0.0` opens it to the network, and there is
 no authentication behind it — anyone who can reach the port can read the whole library and
