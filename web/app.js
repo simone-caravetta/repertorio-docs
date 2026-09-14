@@ -43,28 +43,31 @@ function recall() {
 
 function renderBranch(branch, depth) {
   elements.catalog.append(heading(branch.name, depth));
-  for (const document of branch.documents) {
-    renderDocument(document, depth + 1);
+  for (const record of branch.documents) {
+    renderDocument(record, depth + 1);
   }
   for (const child of branch.children) {
     renderBranch(child, depth + 1);
   }
 }
 
-function renderDocument(document, depth) {
+/* `record`, not `document`: a parameter of that name shadows the browser's own
+ * `document` for the whole function, and the first `document.createElement`
+ * inside it is then a call on the JSON object rather than on the page. */
+function renderDocument(record, depth) {
   const row = document.createElement("button");
   row.type = "button";
   row.className = "document";
   row.style.paddingLeft = `${depth}rem`;
-  row.title = document.path;
+  row.title = record.path;
 
-  row.append(span(document.title, "title"));
-  row.append(span(document.status, `status ${document.status}`));
-  if (document.pages) {
-    row.append(span(`${document.pages} p.`, "pages"));
+  row.append(span(record.title, "title"));
+  row.append(span(record.status, `status ${record.status}`));
+  if (record.pages) {
+    row.append(span(`${record.pages} p.`, "pages"));
   }
 
-  row.addEventListener("click", () => chooseDocument(document.path));
+  row.addEventListener("click", () => chooseDocument(record.path));
   elements.catalog.append(row);
 }
 
@@ -359,7 +362,7 @@ function renderCatalog(view) {
   for (const branch of view.categories) renderBranch(branch, 0);
   if (view.uncategorized.length) {
     elements.catalog.append(heading("no category"));
-    for (const document of view.uncategorized) renderDocument(document, 1);
+    for (const record of view.uncategorized) renderDocument(record, 1);
   }
 }
 
