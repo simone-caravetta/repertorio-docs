@@ -171,9 +171,12 @@ def create_app(
         return {
             "thread_id": thread_id,
             "messages": turns_from(state),
-            # Only the last answer's sources: the state holds the passages of one
-            # turn, and the ones before it were shown when they were asked. The
-            # text of every turn is here, and the text is what a reload is for.
+            # Only the last answer's query and sources: the state holds the
+            # passages of one turn, and the ones before it were shown when they
+            # were asked. The text of every turn is here, and the text is what a
+            # reload is for. The query is here for the same reason it is in the
+            # stream — a reloaded conversation should still say what was searched.
+            "query": state.values.get("contextualized_question"),
             "sources": unique_sources(
                 state.values.get("retrieved_documents", [])
             ),
@@ -250,13 +253,14 @@ async def answer_stream(
     config: dict[str, Any],
     question: str,
 ) -> AsyncIterator[str]:
-    """The answer as it is produced: the thread, the sources, the tokens, the end.
+    """The answer as it is produced: the thread, the query, the sources, the tokens, the end.
 
-    The sources come out of the `updates` stream, which reports what each node
-    handed on: `retrieve` has finished by the time its update is emitted, and the
-    answer is still being written, which is where the fifth of these in the
-    roadmap asks for them. The `messages` stream carries the tokens, filtered to
-    the node that writes the answer, the way the console filters them.
+    The query and the sources come out of the `updates` stream, which reports what
+    each node handed on: `contextualize` has finished by the time its update is
+    emitted, and `retrieve` by the time of its own, while the answer is still
+    being written — which is where the fifth of these in the roadmap asks for the
+    sources. The `messages` stream carries the tokens, filtered to the node that
+    writes the answer, the way the console filters them.
 
     An error can only be reported inside the stream, a response having already
     begun: it ends the answer, and the page says what it was. A client that goes
@@ -286,6 +290,17 @@ async def answer_stream(
 
             elif chunk["type"] == "updates":
                 finished = chunk["data"]
+
+                # The query the search was actually run on, sent before the
+                # passages it found. It is not always the question as it was
+                # typed: the graph rewrites it with the conversation in hand, and
+                # a rewrite can narrow the search without anyone asking it to.
+                # Anything that changes what a question means has to be visible.
+                if "contextualize" in finished:
+                    query = finished["contextualize"].get("contextualized_question")
+                    if query:
+                        yield event("query", {"query": query})
+
                 if "retrieve" not in finished:
                     continue
 

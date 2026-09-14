@@ -191,8 +191,20 @@ h2 {
   text-align: center;
 }
 
-.sources {
+.details {
   margin: 0 0 1rem;
+}
+
+.query {
+  margin: 0 0 0.35rem;
+  color: var(--quiet);
+  font-size: 0.85rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+
+.sources {
+  margin: 0;
   padding-left: 1.2rem;
   color: var(--quiet);
   font-size: 0.85rem;

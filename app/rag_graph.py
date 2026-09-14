@@ -34,6 +34,13 @@ question so it stands on its own: resolve references like "this", "that one",
 "and abroad?", "how much?" using what was said before, so the query can be
 understood without the conversation.
 
+The query says what to look for, not where to look. Which documents are being
+searched is decided before you are asked and is not yours to narrow: a file
+name, a document title or the words "in the document..." inside the query
+override that decision and search a different set of documents from the one
+that was asked for. Never name a document in the query, not even when the
+conversation so far has been about one.
+
 Do not answer the question. Return only the standalone query.""",
     ),
     (

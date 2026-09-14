@@ -7,6 +7,11 @@
 
 const STORAGE_KEY = "repertorio-docs";
 
+/* The query a search was run on, which is not always the question as it was
+ * typed: the graph rewrites it with the conversation in hand first. The line is
+ * here so that a rewrite is shown, rather than changing the answer quietly. */
+const SEARCHED = "searched: ";
+
 // Whole library, a category, or one document. Sent to the server as it is.
 let scope = {};
 let threadId = null;
@@ -154,9 +159,20 @@ function addCategoryOptions(branch) {
 
 async function ask(question) {
   const bubble = addTurn("assistant");
+
+  // What was searched for and what came back, under the answer as it is written.
+  // Both are built empty and filled when their event lands, so that the query is
+  // above the sources whatever order they arrive in.
+  const query = line("", "query");
+  query.hidden = true;
   const sources = document.createElement("ul");
   sources.className = "sources";
   sources.hidden = true;
+
+  const details = document.createElement("div");
+  details.className = "details";
+  details.append(query, sources);
+  bubble.after(details);
 
   elements.send.disabled = true;
   elements.question.value = "";
@@ -178,16 +194,13 @@ async function ask(question) {
       if (name === "thread") {
         threadId = data.thread_id;
         remember();
+      } else if (name === "query") {
+        query.textContent = SEARCHED + data.query;
+        query.hidden = false;
       } else if (name === "sources") {
         for (const source of data.sources) {
-          const item = document.createElement("li");
-          item.textContent =
-            source.page === null || source.page === undefined
-              ? source.source
-              : `${source.source} — p. ${source.page}`;
-          sources.append(item);
+          sources.append(sourceItem(source));
         }
-        bubble.after(sources);
         sources.hidden = false;
       } else if (name === "token") {
         bubble.textContent += data.text;
@@ -249,19 +262,25 @@ async function loadThread() {
     addTurn(message.role === "human" ? "you" : "assistant", message.content);
   }
 
+  // The query and the sources of the last turn, which is all the state holds:
+  // the ones before were shown when they were asked. A reloaded conversation
+  // says the same thing about itself as a live one.
+  if (!thread.query && !thread.sources.length) return;
+
+  const details = document.createElement("div");
+  details.className = "details";
+  if (thread.query) {
+    details.append(line(SEARCHED + thread.query, "query"));
+  }
   if (thread.sources.length) {
     const sources = document.createElement("ul");
     sources.className = "sources";
     for (const source of thread.sources) {
-      const item = document.createElement("li");
-      item.textContent =
-        source.page === null || source.page === undefined
-          ? source.source
-          : `${source.source} — p. ${source.page}`;
-      sources.append(item);
+      sources.append(sourceItem(source));
     }
-    elements.messages.append(sources);
+    details.append(sources);
   }
+  elements.messages.append(details);
 }
 
 /* ----------------------------------------------------------------- pieces */
@@ -288,6 +307,18 @@ function line(text, className) {
   element.className = className;
   element.textContent = text;
   return element;
+}
+
+/* One passage of the answer's sources: the file, and the page when it has one.
+ * Page 0 is a page, which is why this asks whether the page is there rather
+ * than whether it is true. */
+function sourceItem(source) {
+  const item = document.createElement("li");
+  item.textContent =
+    source.page === null || source.page === undefined
+      ? source.source
+      : `${source.source} — p. ${source.page}`;
+  return item;
 }
 
 function span(text, className) {

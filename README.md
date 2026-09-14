@@ -115,6 +115,12 @@ sources of the answer appear as soon as the search is done, while the answer is 
 written. The selector at the top chooses what the next question is asked of, and prints the
 scope in the same words the console prints it in.
 
+Under each answer there is a line saying what was searched for. It is not always the question
+as it was typed: the question is first rewritten together with the conversation so far, so
+that "and for minors?" becomes a question that stands on its own. The line is what that
+rewrite produced, and it is worth reading when an answer seems to have come from the wrong
+document.
+
 Conversations are kept in `data/conversations.sqlite3`, so a conversation is still there
 after the server is restarted. Changing the scope starts a new one: a conversation's history
 is the history of questions about those documents.

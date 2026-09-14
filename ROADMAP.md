@@ -167,6 +167,9 @@ about them.
 - [x] Chat panel with a scope selector. The selector offers the whole library and every
       category, and a document is picked by clicking it in the catalog. The label beside it is
       the string `resolve_scope` produces, character for character the one the console prints.
+      Under each answer the page shows the query the search was run on, which the graph has
+      already rewritten with the conversation in hand and which is therefore not always the
+      question as it was typed.
 - [x] Persistent checkpointer (SQLite) so conversations survive a restart: `build_graph` takes
       one, the server opens `data/conversations.sqlite3` for the life of the process, and a
       reloaded page reads its conversation back through `GET /api/threads/{id}`.
@@ -201,7 +204,13 @@ doubles as the tool that tells whether a local model is good enough for a given 
 - [ ] Hybrid search using the sparse weights BGE-M3 already produces, for codes, names and
       numbers where dense retrieval is weak.
 - [ ] Relevance grading node with a conditional edge: rewrite the query and retry, or state
-      that the answer is not in the documents.
+      that the answer is not in the documents. Seen while building the interface, and the
+      reason this node is not optional: a question with no content of its own ("ciao")
+      retrieves five arbitrary passages, the answer is written from them, and the next
+      question is rewritten with that answer in the conversation — which is how a question
+      asked of the whole library comes back having searched one document. The prompt of
+      `contextualize` was changed to forbid naming a document in the query, which stops that
+      particular road; it does not stop a passage being retrieved and used on no evidence.
 - [ ] Small-to-big retrieval: match on small chunks, hand the surrounding section to the
       model.
 - [ ] Multi-query expansion with reciprocal rank fusion.

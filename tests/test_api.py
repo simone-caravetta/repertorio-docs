@@ -350,7 +350,8 @@ def test_the_sources_arrive_before_the_answer_is_written(
 
     events = events_of(response)
     assert names_of(events)[0] == "thread"
-    assert events[1] == (
+    assert events[1] == ("query", {"query": "a standalone question"})
+    assert events[2] == (
         "sources",
         {
             "sources": [
@@ -371,6 +372,48 @@ def test_the_sources_arrive_before_the_answer_is_written(
         payload["text"] for name, payload in events if name == "token"
     )
     assert tokens == "the answer is here"
+
+
+def test_the_query_that_was_searched_is_sent_even_when_it_is_not_the_question(
+    db_path: Path, config: Settings
+):
+    """The rewrite can put words in the query the question never had.
+
+    It happens with a document name: the conversation so far is about one file,
+    the rewriter qualifies the query with it, and a search over the whole library
+    comes back with that one file. Nothing about the question says so, which is
+    why the query is sent to the page instead of staying in the server.
+    """
+    file_document(db_path, MANUAL, category="manuals")
+    rewritten = 'Who is Simone in the document "manuals/manual.pdf"?'
+    harness = harness_for(config, replies=[rewritten, "the answer"])
+
+    with harness.client() as client:
+        events = events_of(ask(client, "who is Simone?"))
+
+    assert [payload for name, payload in events if name == "query"] == [
+        {"query": rewritten}
+    ]
+    # Before the passages, because it is what produced them.
+    assert names_of(events).index("query") < names_of(events).index("sources")
+
+
+def test_the_rewriter_is_told_not_to_name_a_document_in_the_query(
+    db_path: Path, config: Settings
+):
+    """The instruction that keeps a scope from being narrowed behind the asker.
+
+    This checks the prompt carries it, which is as far as an offline test reaches:
+    whether the model obeys is the model's business and is checked by asking it.
+    """
+    file_document(db_path, MANUAL, category="manuals")
+    harness = harness_for(config, replies=["a standalone question", "the answer"])
+
+    with harness.client() as client:
+        ask(client, "who is Simone?")
+
+    rewriting_prompt = str(harness.model.prompts[0])
+    assert "Never name a document in the query" in rewriting_prompt
 
 
 def test_a_question_with_nothing_retrieved_streams_no_sources(
@@ -439,6 +482,9 @@ def test_the_thread_id_comes_back_and_the_next_question_joins_it(
         {"role": "human", "content": "and for minors?"},
         {"role": "ai", "content": "the second answer"},
     ]
+    # The last turn's query, so that a reloaded page says what was searched for
+    # as well as what was said.
+    assert thread["query"] == "a second standalone question"
     # The follow-up was rewritten knowing what came before it, which is the
     # conversation being one conversation rather than two questions in a row.
     assert "the answer" in str(harness.model.prompts[2])
@@ -501,7 +547,12 @@ def test_a_conversation_nobody_has_had_yet_is_empty_rather_than_an_error(
     with harness_for(config, replies=[]).client() as client:
         thread = client.get("/api/threads/chat-nobody").json()
 
-    assert thread == {"thread_id": "chat-nobody", "messages": [], "sources": []}
+    assert thread == {
+        "thread_id": "chat-nobody",
+        "messages": [],
+        "query": None,
+        "sources": [],
+    }
 
 
 # ------------------------------------------------------------------ the page
