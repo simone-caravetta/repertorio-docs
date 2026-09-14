@@ -42,6 +42,15 @@ h1 {
   font-weight: 600;
 }
 
+/* The name, drawn rather than set: the heading above still says it for anything
+ * that reads the page rather than looks at it. Full width of the page and no
+ * more than that, so it takes the shape it was drawn in at every size. */
+.banner {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 /* The head of the conversation: its title over the scope the server resolved
  * and the one control that throws the conversation away. Quiet throughout,
  * because it is a heading and not the conversation; the title inside is not,
