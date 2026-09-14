@@ -153,7 +153,8 @@ the group being asked about, and clicking it drops the list it was picked from �
 conversation there is, and the documents, the categories and the whole library with them. So
 moving between conversations is picking one from a list. Under the title is the scope in the
 words the console prints it in, which is what the next question will be asked of, and beside
-that **New conversation**.
+that **New conversation** — and **Delete**, when the conversation is one the page made and
+can take back.
 
 Several documents can be asked about together, the way `--documents` does it from the
 console. **Select several**, beside `Documents`, puts a box at the left of every row: the box
@@ -169,8 +170,9 @@ A group keeps the title it was given, which is what tells two groups of the same
 the server calls both of them `2 documents`. The titles are the page's own, in the browser's
 storage beside the scope and the conversations, and a group that has been named stays in the
 list even with no conversation on it. A document and a category are named by what they are.
-Nothing removes a title, not even **New conversation**: a title belongs to the set of
-documents, not to the conversation about them.
+The title is the reader's, so the field takes one off as readily as it puts one on, and
+**Delete** takes it off along with the conversation. **New conversation** does not: a title
+belongs to the set of documents, not to the conversation about them.
 
 Under each answer there is a line saying what was searched for. It is not always the question
 as it was typed: the question is first rewritten together with the conversation so far, so
@@ -183,12 +185,19 @@ them, and not only which passages were found — see [Descriptions](#description
 what makes a question about the library itself answerable.
 
 Conversations are kept in `data/conversations.sqlite3`, so a conversation is still there
-after the server is restarted. Each scope has its own: ask about a document, move to another
-one and come back, and the questions you asked about the first are still there. It is one
-conversation per scope rather than one running conversation, because every question is
-rewritten together with the conversation it is asked in, and the history of a question about
-one document is not context for a question about another. **New conversation**, beside the
-scope, starts one over — and only that: the title the group was given stays on it.
+after the server is restarted, unless it has been deleted. Each scope has its own: ask about
+a document, move to another one and come back, and the questions you asked about the first
+are still there. It is one conversation per scope rather than one running conversation,
+because every question is rewritten together with the conversation it is asked in, and the
+history of a question about one document is not context for a question about another.
+**New conversation**, beside the scope, starts one over — and only that: the title the group
+was given stays on it. **Delete** is the other one, and it asks first: it takes the
+conversation away for good, from the page and from the file. It is offered on a document's
+and on a group's conversation — the two entries the conversation itself put in the list. A
+category's and the whole library's come from the catalog and would be back the moment it was
+read again, so **New conversation** is what clears one of those. A group that was named but
+never asked anything of has nothing in the file yet, so deleting it takes the name away and
+nothing else.
 
 The server listens on `127.0.0.1` only. `--host 0.0.0.0` opens it to the network, and there is
 no authentication behind it — anyone who can reach the port can read the whole library and

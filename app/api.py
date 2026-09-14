@@ -187,6 +187,27 @@ def create_app(
             ),
         }
 
+    @app.delete("/api/threads/{thread_id}")
+    async def delete_thread_route(thread_id: str, request: Request) -> dict[str, str]:
+        """Remove a conversation and everything that was said in it.
+
+        A delete and not a forgetting: the checkpoints are gone from the file, so
+        there is nothing left to read back and nothing to carry on. A conversation
+        nobody has had is already gone, and saying so is not an error either — the
+        same reading `GET` takes of one.
+
+        The tables are opened first because `adelete_thread` is the one method of
+        the saver that does not open them itself. Reading and writing both do, which
+        is why a `GET` against a database nothing has ever been written to answers
+        and a `DELETE` against one would raise instead. `setup` does nothing once it
+        has been done, so this costs a lock and no more.
+        """
+        checkpointer = request.app.state.checkpointer
+        await checkpointer.setup()
+        await checkpointer.adelete_thread(thread_id)
+
+        return {"thread_id": thread_id}
+
     return app
 
 

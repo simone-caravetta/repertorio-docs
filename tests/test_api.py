@@ -622,6 +622,78 @@ def test_a_conversation_nobody_has_had_yet_is_empty_rather_than_an_error(
     }
 
 
+def test_deleting_a_conversation_empties_it(db_path: Path, config: Settings):
+    file_document(db_path, MANUAL, category="manuals")
+    harness = harness_for(config, replies=["a standalone question", "the answer"])
+
+    with harness.client() as client:
+        thread_id = events_of(ask(client, "what does it say?"))[0][1]["thread_id"]
+        assert client.get(f"/api/threads/{thread_id}").json()["messages"]
+
+        deleted = client.delete(f"/api/threads/{thread_id}")
+
+        assert deleted.status_code == 200
+        assert deleted.json() == {"thread_id": thread_id}
+        after = client.get(f"/api/threads/{thread_id}").json()
+
+    assert after["messages"] == []
+
+
+def test_deleting_a_conversation_nobody_has_had_is_not_an_error(config: Settings):
+    """The same reading `GET` takes: there is nothing there, and that is fine."""
+    with harness_for(config, replies=[]).client() as client:
+        deleted = client.delete("/api/threads/chat-nobody")
+
+    assert deleted.status_code == 200
+
+
+def test_deleting_one_conversation_leaves_the_others_alone(
+    db_path: Path, config: Settings
+):
+    file_document(db_path, MANUAL, category="manuals")
+    file_document(db_path, REPORT, category="reports")
+    harness = harness_for(
+        config,
+        replies=[
+            "a standalone question",
+            "the answer",
+            "another standalone question",
+            "another answer",
+        ],
+    )
+
+    with harness.client() as client:
+        first = events_of(ask(client, "what does it say?", document=MANUAL))[0][1]
+        second = events_of(ask(client, "and here?", document=REPORT))[0][1]
+
+        client.delete(f"/api/threads/{first['thread_id']}")
+        kept = client.get(f"/api/threads/{second['thread_id']}").json()
+
+    assert [turn["content"] for turn in kept["messages"]] == [
+        "and here?",
+        "another answer",
+    ]
+
+
+def test_a_deleted_conversation_does_not_come_back_when_the_server_restarts(
+    db_path: Path, config: Settings
+):
+    """The point of deleting rather than forgetting: the file no longer holds it."""
+    file_document(db_path, MANUAL, category="manuals")
+
+    first = harness_for(config, replies=["a standalone question", "the answer"])
+    with first.client() as client:
+        thread_id = events_of(ask(client, "what does it say?"))[0][1]["thread_id"]
+        client.delete(f"/api/threads/{thread_id}")
+
+    # A second server over the same file, which is where the conversation lived.
+    second = harness_for(config, replies=[])
+    with second.client() as client:
+        thread = client.get(f"/api/threads/{thread_id}").json()
+
+    assert thread["messages"] == []
+
+
 # ------------------------------------------------------------------ the page
 
 

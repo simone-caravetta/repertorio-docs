@@ -40,9 +40,10 @@ let several = false;
 
 /* What the reader has called the groups they made, by scope key. Only a group is
  * named: a document and a category are named by what they are. It is the reader's
- * and only the reader's, so nothing removes an entry — not even a new
- * conversation, a name belonging to the set of documents and not to the
- * conversation about them. */
+ * and only the reader's — the reader puts a name on and takes it off again, and
+ * deleting a conversation takes its name off with it. What does not happen is a
+ * name going anywhere on its own: a name belongs to the set of documents and not
+ * to the conversation about them, so a new conversation leaves it standing. */
 let groupNames = {};
 
 /* A scope as one string, to look its conversation up by. The same documents
@@ -73,6 +74,21 @@ function currentThread() {
   return threads[scopeKey(scope)] || null;
 }
 
+/* Whether the conversation in force is one this page made, and so one it can take
+ * away. A document and a group are: `offeredDocuments` reads the one off `threads`
+ * and `groups` reads the other off `threads` and `groupNames`, so deleting is what
+ * takes the entry away. A category's option and the whole library's are offered by
+ * the library itself and would be offered again straight afterwards, and it is the
+ * guard below that leaves them out — neither names a document, which is also why a
+ * document just picked from the catalog has no entry yet and New conversation is
+ * disabled on it. */
+function deletable() {
+  if (scope.document == null && !(scope.documents || []).length) return false;
+
+  const key = scopeKey(scope);
+  return key in threads || key in groupNames;
+}
+
 /* What the reader has put away in the catalog: a category by its name, a
  * document by its path. Kept with the scope, so the panel opens the way it was
  * left instead of closing again on every visit. */
@@ -87,6 +103,7 @@ const elements = {
   question: document.getElementById("question"),
   send: document.getElementById("send"),
   newThread: document.getElementById("new-thread"),
+  deleteThread: document.getElementById("delete-thread"),
   selectSeveral: document.getElementById("select-several"),
   selection: document.getElementById("selection"),
   selectionCount: document.getElementById("selection-count"),
@@ -438,6 +455,17 @@ async function chooseScope(next) {
   await describeScope();
 }
 
+/* The two buttons beside the scope, drawn from the conversation in force: one is
+ * for making a new one and is out of reach until there is one to leave, the other
+ * is for throwing this one away and is on screen only while there is one this page
+ * made. Both together because both are answering the same question — whether what
+ * the scope is on is a conversation yet — and because there are two places that
+ * answer it. */
+function showThreadControls() {
+  elements.newThread.disabled = currentThread() === null;
+  elements.deleteThread.hidden = !deletable();
+}
+
 /* The conversation of the scope that is now on: the one already had about these
  * documents, read back from the server, or an empty one that says so. Moving to
  * another document and coming back finds the questions asked about the first,
@@ -446,7 +474,7 @@ async function showConversation() {
   elements.messages.replaceChildren();
 
   const thread = currentThread();
-  elements.newThread.disabled = thread === null;
+  showThreadControls();
   if (thread) {
     await loadThread(thread);
   } else if (!isEmpty(scope)) {
@@ -461,6 +489,43 @@ function newConversation() {
   delete threads[scopeKey(scope)];
   remember();
   showConversation();
+}
+
+/* Throw the conversation of this scope away, here and on the server. New
+ * conversation is the other one and leaves the thread standing: the questions go
+ * and the name stays. This one is the end of the whole thing, which is why it
+ * asks first. */
+async function deleteConversation() {
+  const key = scopeKey(scope);
+  const thread = threads[key];
+  const name = titleOf(scope);
+  if (!confirm(`Delete the conversation "${name}"? This cannot be undone.`)) return;
+
+  // The server first, and the page only if it agreed. Dropping the entry while
+  // the row stayed behind would leave exactly what this is for: a conversation
+  // nothing on the page can reach and nothing ever will.
+  if (thread) {
+    const response = await fetch(`/api/threads/${encodeURIComponent(thread)}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      elements.scopeLabel.textContent = "The conversation could not be deleted.";
+      elements.scopeLabel.classList.add("refused");
+      return;
+    }
+  }
+
+  // Both deletes are no-ops for the key that does not apply: a group that was
+  // named and never asked about has no thread, and a document has no name. The
+  // name goes with the conversation — left behind, it would keep the group in
+  // the selector, which is the entry being removed.
+  delete threads[key];
+  delete groupNames[key];
+
+  // Away from what was just deleted, because the selector offers the scope in
+  // force whether or not anything is left behind it: staying would keep the
+  // entry on screen and make the delete look like it had done nothing.
+  await chooseScope({});
 }
 
 async function describeScope() {
@@ -511,11 +576,11 @@ function fillScopeSelect() {
  * has named it, or when it is the group in force, which is one just built and not
  * yet asked anything of.
  *
- * `groupNames` is the one table here that only grows, and it grows by what the
- * reader named on purpose. It has to be in this union: a thread is made when the
- * first answer arrives, so a group named and then left before asking anything is
- * in neither `threads` nor the scope in force, and without this its name would
- * sit in storage with no way back to it. */
+ * `groupNames` grows by what the reader named on purpose, and the only thing that
+ * takes an entry out of it is deleting the conversation. It has to be in this
+ * union: a thread is made when the first answer arrives, so a group named and then
+ * left before asking anything is in neither `threads` nor the scope in force, and
+ * without this its name would sit in storage with no way back to it. */
 function groups() {
   const known = new Map();
   for (const key of Object.keys(threads)) {
@@ -657,8 +722,10 @@ async function ask(question) {
       if (name === "thread") {
         threads[scopeKey(asked)] = data.thread_id;
         // Asked again rather than set: the answer may have started on one scope
-        // and still be arriving after the reader has moved to another.
-        elements.newThread.disabled = currentThread() === null;
+        // and still be arriving after the reader has moved to another. This is
+        // also the moment a conversation first exists, and so the first moment
+        // there is one to delete.
+        showThreadControls();
         remember();
       } else if (name === "query") {
         query.textContent = SEARCHED + data.query;
@@ -813,6 +880,8 @@ elements.composer.addEventListener("submit", (event) => {
 });
 
 elements.newThread.addEventListener("click", () => newConversation());
+
+elements.deleteThread.addEventListener("click", () => deleteConversation());
 
 elements.selectSeveral.addEventListener("click", () => setSeveral(!several));
 

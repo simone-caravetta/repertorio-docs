@@ -187,10 +187,22 @@ about them.
       title rather than sitting in the page header, so one control names the conversation and
       drops the list of the others — a heading beside a menu would be two controls showing one
       fact. **New conversation** keeps meaning only what it meant, forget this scope's history.
-      The titles are the page's, in localStorage beside the scope→thread map, and they are the
-      one table here that only grows: nothing prunes it, a title belonging to the set of
-      documents rather than to the conversation about them. Bounded by what the reader names on
+      The titles are the page's, in localStorage beside the scope→thread map, and only two
+      things take one away: the reader clearing the field, and deleting the conversation it
+      names. A title belongs to the set of documents rather than to the conversation about
+      them, which is why **New conversation** leaves it. Bounded by what the reader names on
       purpose, and the reason a group can be offered by name with no conversation on it yet.
+- [x] Deleting a conversation. **Delete** beside the scope removes the thread from the page and
+      the checkpoints from `data/conversations.sqlite3` behind a confirmation, and is offered
+      only where the entry is the conversation's own — a document and a group. A category's
+      entry and the whole library's come from the catalog and would be offered again the moment
+      they were removed, so those two keep **New conversation** as the way to clear their
+      history. The scope moves to the whole library afterwards: the selector offers the scope in
+      force whatever is left behind it, so staying would make the delete look like it had done
+      nothing while the row was already gone from the file. `adelete_thread` is the one method
+      of the checkpointer that does not open the tables itself, so the route calls `setup`
+      first — which is what makes a delete on a database nothing has ever been written to
+      answer rather than raise.
 - [x] Persistent checkpointer (SQLite) so conversations survive a restart: `build_graph` takes
       one, the server opens `data/conversations.sqlite3` for the life of the process, and a
       reloaded page reads its conversation back through `GET /api/threads/{id}`. The page
