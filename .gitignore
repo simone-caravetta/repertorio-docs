@@ -20,6 +20,10 @@ data/catalog*.sqlite3.lock
 # codice, e si ricostruisce con un sync.
 data/chroma/
 
+# Le conversazioni contengono le domande e le risposte: private quanto i
+# documenti che citano.
+data/conversations*.sqlite3*
+
 # Optional local caches if configured inside the project
 .huggingface/
 .cache/

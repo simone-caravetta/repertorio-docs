@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.retrievers import BaseRetriever
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -102,10 +103,30 @@ def format_context(documents: list[Document]) -> tuple[str, list[dict[str, Any]]
     return "\n\n".join(context_parts), source_rows
 
 
+def unique_sources(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row per place a passage came from.
+
+    Four chunks of one page are one source, and the first mention is the one
+    kept, so the list reads in the order the passages were found.
+    """
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[Any, Any]] = set()
+
+    for row in rows:
+        key = (row.get("source"), row.get("page"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+
+    return unique
+
+
 def build_graph(
     *,
     chat_model: BaseChatModel,
     retriever: BaseRetriever | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledStateGraph:
     """Wire the graph around the model that answers and the retriever that searches.
 
@@ -114,6 +135,11 @@ def build_graph(
     local server and Pinecone in use. The retriever falls back to the Pinecone
     one, built on first use — opening it at build time would load the embedding
     model before the console has asked anything.
+
+    The checkpointer falls back to memory, which is what a console session wants:
+    it is a session, and its history is not worth a file. A server hands in a
+    persistent one instead, because a conversation that ends when the process
+    does is the thing it exists not to have.
     """
     contextualize_chain = contextualize_prompt | chat_model | StrOutputParser()
 
@@ -165,7 +191,7 @@ def build_graph(
     builder.add_edge("retrieve", "answer")
     builder.add_edge("answer", END)
 
-    return builder.compile(checkpointer=InMemorySaver())
+    return builder.compile(checkpointer=checkpointer or InMemorySaver())
 
 
 @lru_cache(maxsize=1)
@@ -178,8 +204,46 @@ def get_app() -> CompiledStateGraph:
     return build_graph(chat_model=build_chat_model())
 
 
+def thread_config(thread_id: str) -> dict[str, Any]:
+    """The config naming one conversation, for every call that touches one.
+
+    A thread id is the whole of what a conversation is: the same id on the next
+    question continues it, and the same id after a restart finds it again.
+    """
+    return {"configurable": {"thread_id": thread_id}}
+
+
 def get_thread_state(
     config: dict[str, Any], graph: CompiledStateGraph | None = None
 ):
     """What the conversation has produced so far, on the graph that ran it."""
     return (graph or get_app()).get_state(config)
+
+
+async def read_thread_state(config: dict[str, Any], graph: CompiledStateGraph):
+    """The same, read the other way round.
+
+    Async because a persistent checkpointer is: with a saver that has to reach a
+    file, the synchronous call above blocks the event loop, so a server reads its
+    threads through here while the console — whose saver is in memory — keeps the
+    synchronous one it has always used.
+    """
+    return await graph.aget_state(config)
+
+
+def turns_from(state) -> list[dict[str, str]]:
+    """The conversation as the turns a page renders, oldest first.
+
+    Only what was said: the tool messages and the traffic of the nodes are in the
+    state too, and none of it is a conversation.
+    """
+    turns: list[dict[str, str]] = []
+
+    for message in state.values.get("messages", []):
+        if message.type not in {"human", "ai"}:
+            continue
+        if not isinstance(message.content, str):
+            continue
+        turns.append({"role": message.type, "content": message.content})
+
+    return turns

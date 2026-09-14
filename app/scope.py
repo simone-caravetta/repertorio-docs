@@ -13,8 +13,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from langchain_core.retrievers import BaseRetriever
+
 from app.catalog import Catalog, DocumentRecord, normalise_category
 from app.config import Settings
+from app.vectorstore import WholeDocumentRetriever, build_retriever, get_vectorstore
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,28 @@ def resolve_scope(
         return Scope(sources=sources, label=_documents(len(sources)))
 
     return whole_library()
+
+
+def build_scoped_retriever(scope: Scope) -> BaseRetriever:
+    """The retriever these documents are searched through.
+
+    A document small enough to be read whole goes through the whole-document
+    retriever, which hands back all of it in reading order; everything else — a
+    category, a selection, one document too long for the budget — is the
+    similarity search the library has always used, with the scope's documents as
+    the one filter.
+
+    The graph takes either one the same way, which is the whole reason a scope
+    changes nothing about the graph.
+    """
+    if scope.whole_document and scope.sources and scope.chunks:
+        return WholeDocumentRetriever(
+            store=get_vectorstore(),
+            source=scope.sources[0],
+            k=scope.chunks,
+        )
+
+    return build_retriever(sources=scope.sources)
 
 
 def _category_scope(catalog: Catalog, name: str | None) -> Scope:

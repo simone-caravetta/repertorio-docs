@@ -1,12 +1,20 @@
-"""Test doubles: a minimal PDF writer, a fake vector store, a hermetic Settings."""
+"""Test doubles: a minimal PDF writer, a fake model, a fake vector store, a
+hermetic Settings."""
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
+from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.documents import Document
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.vectorstores import VectorStore
+from pydantic import Field
 
 from app.config import Settings
 
@@ -41,6 +49,9 @@ def make_settings(**overrides: object) -> Settings:
         # whoever runs it.
         "documents_dir": Path("/tmp/repertorio-docs-test/documents"),
         "catalog_db_path": Path("/tmp/repertorio-docs-test/catalog.sqlite3"),
+        "conversations_db_path": Path(
+            "/tmp/repertorio-docs-test/conversations.sqlite3"
+        ),
         # A scope is resolved against these two, so a test that pins neither
         # would decide differently on a machine with a different `.env`.
         "chunk_size": 200,
@@ -107,6 +118,74 @@ def make_pdf(path: Path, text: str) -> Path:
 
     path.write_bytes(b"".join(body + xref + [trailer]))
     return path
+
+
+class FakeChatModel(BaseChatModel):
+    """Replies from a list, one reply per call, and keeps the prompts it saw.
+
+    It streams as well as it generates, a word at a time: what the graph hands a
+    caller in `messages` mode is the pieces a model produced, not one answer that
+    arrived whole, and a test of the token stream needs a model that has pieces
+    to give. Streaming is also what a real model does here — the callback the
+    graph installs is what makes it stream, so the console and the page both see
+    the answer as it is written.
+    """
+
+    replies: list[str]
+    prompts: list[list[BaseMessage]] = Field(default_factory=list)
+
+    @property
+    def _llm_type(self) -> str:
+        return "fake"
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self.prompts.append(list(messages))
+        reply = self.replies[len(self.prompts) - 1]
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content=reply))]
+        )
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        self.prompts.append(list(messages))
+        reply = self.replies[len(self.prompts) - 1]
+
+        for piece in pieces_of(reply):
+            chunk = ChatGenerationChunk(message=AIMessageChunk(content=piece))
+            if run_manager is not None:
+                await run_manager.on_llm_new_token(piece, chunk=chunk)
+            yield chunk
+
+
+def pieces_of(reply: str) -> list[str]:
+    """A reply as the pieces it streams in: words, spaces kept with them."""
+    words = reply.split(" ")
+    return [word + " " for word in words[:-1]] + words[-1:]
+
+
+class FakeRetriever:
+    """The graph only ever calls `ainvoke` on a retriever, so that is all this is."""
+
+    def __init__(self, documents: list[Document]) -> None:
+        self.documents = documents
+        self.queries: list[str] = []
+
+    async def ainvoke(
+        self, query: str, config: Any = None, **kwargs: Any
+    ) -> list[Document]:
+        self.queries.append(query)
+        return self.documents
 
 
 @dataclass

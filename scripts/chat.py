@@ -8,28 +8,13 @@ from uuid import uuid4
 from app.catalog import Catalog
 from app.chat_model import build_chat_model
 from app.config import describe_vector_store, settings, short_path
-from app.rag_graph import build_graph, get_thread_state
-from app.scope import Scope, resolve_scope
-from app.vectorstore import WholeDocumentRetriever, build_retriever, get_vectorstore
-
-
-def build_scoped_graph(scope: Scope):
-    """The graph for a question asked of these documents, and nothing else.
-
-    A scope is a different retriever handed to the same graph, which is why the
-    graph itself is untouched by any of this. The whole-library retriever is
-    cached; a scoped one is built here and does not outlive the run.
-    """
-    if scope.whole_document and scope.sources and scope.chunks:
-        retriever = WholeDocumentRetriever(
-            store=get_vectorstore(),
-            source=scope.sources[0],
-            k=scope.chunks,
-        )
-    else:
-        retriever = build_retriever(sources=scope.sources)
-
-    return build_graph(chat_model=build_chat_model(), retriever=retriever)
+from app.rag_graph import (
+    build_graph,
+    get_thread_state,
+    thread_config,
+    unique_sources,
+)
+from app.scope import build_scoped_retriever, resolve_scope
 
 
 async def run_chat(
@@ -51,14 +36,19 @@ async def run_chat(
             document=document,
             documents=documents or [],
         )
-        graph = build_scoped_graph(scope)
+        # A scope is a different retriever handed to the same graph, which is why
+        # the graph itself is untouched by any of this.
+        graph = build_graph(
+            chat_model=build_chat_model(),
+            retriever=build_scoped_retriever(scope),
+        )
     except (LookupError, RuntimeError) as exc:
         # A key that is missing, a category that is not there: a message to read,
         # not a stack trace to work through.
         raise SystemExit(str(exc)) from exc
 
-    thread_id = f"console-{uuid4()}"
-    config = {"configurable": {"thread_id": thread_id}}
+    # A console session is not resumed: its history is worth a run, not a file.
+    config = thread_config(f"console-{uuid4()}")
 
     print("Repertorio Docs console")
     # The console reads the same `.env` as the sync, but saying which store it
@@ -116,19 +106,11 @@ async def run_chat(
             print("\n")
 
             state = get_thread_state(config, graph)
-            sources = state.values.get("retrieved_documents", [])
+            sources = unique_sources(state.values.get("retrieved_documents", []))
 
             if sources:
-                unique_sources = []
-                seen = set()
-                for source in sources:
-                    key = (source.get("source"), source.get("page"))
-                    if key not in seen:
-                        seen.add(key)
-                        unique_sources.append(source)
-
                 print("Sources:")
-                for source in unique_sources:
+                for source in sources:
                     page = source.get("page")
                     suffix = f" - p. {page}" if page else ""
                     print(f"  - {source.get('source')}{suffix}")

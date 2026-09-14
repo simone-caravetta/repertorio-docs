@@ -50,7 +50,8 @@ You: And for minors?
 Assistant: ...
 ```
 
-The PDFs need a selectable text layer: a scan without one is not indexed.
+The PDFs need a selectable text layer: a scan without one is not indexed. There is a web
+interface as well — see [Web interface](#web-interface).
 
 ## Documents
 
@@ -99,6 +100,28 @@ The console prints the scope it is on before the first question. A single docume
 enough to fit the model's context is read whole rather than by similarity, in reading order,
 so nothing in it is left out by ranking; `WHOLE_DOCUMENT_MAX_CHARS` sets the budget (24000 by
 default, 0 to always search by similarity).
+
+## Web interface
+
+The same library in a browser, with the same scopes:
+
+```bash
+python -m scripts.serve     # http://127.0.0.1:8000
+```
+
+The catalog is on the left, grouped by category, each document with its title and its status;
+clicking a document asks about that document. The conversation is on the right, and the
+sources of the answer appear as soon as the search is done, while the answer is still being
+written. The selector at the top chooses what the next question is asked of, and prints the
+scope in the same words the console prints it in.
+
+Conversations are kept in `data/conversations.sqlite3`, so a conversation is still there
+after the server is restarted. Changing the scope starts a new one: a conversation's history
+is the history of questions about those documents.
+
+The server listens on `127.0.0.1` only. `--host 0.0.0.0` opens it to the network, and there is
+no authentication behind it — anyone who can reach the port can read the whole library and
+every conversation in it. `--port`, `--db` and `--conversations` are there too.
 
 ## Models
 
@@ -152,9 +175,9 @@ for Chroma. Set `CATALOG_DB_PATH` only to put one somewhere else — and if a ca
 up describing a store that does not hold its vectors, the sync says so rather than reporting
 a run with nothing to do.
 
-One limit worth knowing: the sync and the delete command take a lock, the console does not.
-With a hosted index that does not matter, but with a local store a console session and a sync
-would be writing the same folder at the same time.
+One limit worth knowing: the sync and the delete command take a lock, the console and the web
+server do not. With a hosted index that does not matter, but with a local store any two of
+them would be writing the same folder at the same time.
 
 ## Development
 

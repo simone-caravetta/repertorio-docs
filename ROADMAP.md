@@ -156,13 +156,26 @@ re-embedding it.
 The first version of the interface: you open it, see your documents, and ask questions
 about them.
 
-- [ ] FastAPI with SSE streaming for tokens and sources.
-- [ ] Catalog view: documents grouped by category, each with title, description and status.
-- [ ] Chat panel with a scope selector.
-- [ ] Persistent checkpointer (SQLite) so conversations survive a restart — the same
-      mechanism gives conversation time travel through `get_state_history`.
-- [ ] Stream the sources as soon as retrieval completes, instead of at the end of the
-      answer.
+- [x] FastAPI with SSE streaming for tokens and sources: `python -m scripts.serve`, the page in
+      `web/` and the application in `app/api.py`. The stream is written by hand — the question
+      goes in the body of a `POST` and the events are parsed out of `text/event-stream`, which
+      is one blank line and two fields and needs no library. `EventSource` would have put the
+      question in the URL, where it is logged, capped in length and kept in the history.
+- [x] Catalog view: documents grouped by category, each with its title and its status. What is
+      not `indexed` is shown with the status it is in, and what is trashed is left out.
+      `description` is in the view and is empty: nothing writes it until Phase 5.
+- [x] Chat panel with a scope selector. The selector offers the whole library and every
+      category, and a document is picked by clicking it in the catalog. The label beside it is
+      the string `resolve_scope` produces, character for character the one the console prints.
+- [x] Persistent checkpointer (SQLite) so conversations survive a restart: `build_graph` takes
+      one, the server opens `data/conversations.sqlite3` for the life of the process, and a
+      reloaded page reads its conversation back through `GET /api/threads/{id}`.
+      `get_state_history` is the mechanism the same checkpointer would give time travel
+      through, and is not used yet.
+- [x] Stream the sources as soon as retrieval completes, instead of at the end of the answer:
+      the graph is streamed in two modes at once, and the `retrieve` node's update reaches the
+      page while the `answer` node is still writing — which is what makes the citations
+      visible before the answer is.
 
 ## Phase 5 — Smart ingestion
 

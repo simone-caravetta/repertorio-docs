@@ -10,8 +10,18 @@ langchain-pinecone>=0.2,<1.0
 # two stores on the same versions everywhere.
 langchain-chroma>=1.1,<2.0
 langgraph>=1.0,<2.0
+# The checkpointer a conversation survives a restart in. In memory is the one
+# langgraph carries itself, and what the console goes on using; this is the one
+# that writes to a file.
+langgraph-checkpoint-sqlite>=3.0,<4.0
 pinecone>=7.0,<8.0
 sentence-transformers>=5.0,<6.0
 torch>=2.0
 pypdf>=5.0,<7.0
 python-dotenv>=1.0,<2.0
+
+# The web interface: the app and the server that runs it. The stream is written
+# by hand — `text/event-stream` is a few lines of text — so there is no third
+# package for it.
+fastapi>=0.115,<1.0
+uvicorn>=0.30,<1.0

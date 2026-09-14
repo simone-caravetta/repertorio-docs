@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Repertorio Docs</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Repertorio Docs</h1>
+      <div class="scope">
+        <label for="scope">Ask about</label>
+        <select id="scope"></select>
+        <span id="scope-label" class="label"></span>
+      </div>
+    </header>
+
+    <main>
+      <aside class="catalog">
+        <h2>Documents</h2>
+        <div id="catalog" class="tree"></div>
+      </aside>
+
+      <section class="chat">
+        <div id="messages" class="messages"></div>
+        <form id="composer">
+          <label class="visually-hidden" for="question">Question</label>
+          <textarea
+            id="question"
+            rows="2"
+            placeholder="Ask a question about these documents"
+          ></textarea>
+          <button type="submit" id="send">Ask</button>
+        </form>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

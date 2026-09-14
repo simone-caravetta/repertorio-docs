@@ -77,6 +77,13 @@ class Settings:
     catalog_db_path: Path = PROJECT_ROOT / os.getenv(
         "CATALOG_DB_PATH", _default_catalog_path(vector_store)
     )
+    # Where the conversations live between runs, as the graph checkpoints them.
+    # One file and not one per store, unlike the catalog: a conversation is what
+    # was said, and the documents it cites are named the same way whichever store
+    # is holding their vectors.
+    conversations_db_path: Path = PROJECT_ROOT / os.getenv(
+        "CONVERSATIONS_DB_PATH", "data/conversations.sqlite3"
+    )
 
 
 settings = Settings()

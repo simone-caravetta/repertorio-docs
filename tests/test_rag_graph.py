@@ -10,56 +10,14 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.documents import Document
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
-from pydantic import Field
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.rag_graph import build_graph, format_context
 from app.vectorstore import WholeDocumentRetriever
-from tests.helpers import FakeVectorStore
+from tests.helpers import FakeChatModel, FakeRetriever, FakeVectorStore
 
 THREAD = {"configurable": {"thread_id": "test-thread"}}
-
-
-class FakeChatModel(BaseChatModel):
-    """Replies from a list, one reply per call, and keeps the prompts it saw."""
-
-    replies: list[str]
-    prompts: list[list[BaseMessage]] = Field(default_factory=list)
-
-    @property
-    def _llm_type(self) -> str:
-        return "fake"
-
-    def _generate(
-        self,
-        messages: list[BaseMessage],
-        stop: list[str] | None = None,
-        run_manager: CallbackManagerForLLMRun | None = None,
-        **kwargs: Any,
-    ) -> ChatResult:
-        self.prompts.append(list(messages))
-        reply = self.replies[len(self.prompts) - 1]
-        return ChatResult(
-            generations=[ChatGeneration(message=AIMessage(content=reply))]
-        )
-
-
-class FakeRetriever:
-    """The graph only ever calls `ainvoke` on a retriever, so that is all this is."""
-
-    def __init__(self, documents: list[Document]) -> None:
-        self.documents = documents
-        self.queries: list[str] = []
-
-    async def ainvoke(
-        self, query: str, config: Any = None, **kwargs: Any
-    ) -> list[Document]:
-        self.queries.append(query)
-        return self.documents
 
 
 def make_document(page: int | None = 11) -> Document:
