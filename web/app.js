@@ -12,9 +12,16 @@ const STORAGE_KEY = "repertorio-docs";
  * here so that a rewrite is shown, rather than changing the answer quietly. */
 const SEARCHED = "searched: ";
 
+const NO_CATEGORY = "no category";
+
 // Whole library, a category, or one document. Sent to the server as it is.
 let scope = {};
 let threadId = null;
+
+/* What the reader has put away in the catalog: a category by its name, a
+ * document by its path. Kept with the scope, so the panel opens the way it was
+ * left instead of closing again on every visit. */
+let collapsed = new Set();
 
 const elements = {
   scope: document.getElementById("scope"),
@@ -29,7 +36,10 @@ const elements = {
 /* ---------------------------------------------------------------- storage */
 
 function remember() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ scope, threadId }));
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({ scope, threadId, collapsed: [...collapsed] })
+  );
 }
 
 function recall() {
@@ -38,6 +48,7 @@ function recall() {
     if (saved && typeof saved === "object") {
       scope = saved.scope || {};
       threadId = saved.threadId || null;
+      collapsed = new Set(saved.collapsed || []);
     }
   } catch {
     // A value from another version of this page: start over rather than fail.
@@ -46,48 +57,116 @@ function recall() {
 
 /* ---------------------------------------------------------------- catalog */
 
-function renderBranch(branch, depth) {
-  elements.catalog.append(heading(branch.name, depth));
+/* What the reader has put away, and how a heading and its contents follow it.
+ * `controls` are the elements that say whether it is open: on a category that
+ * is the heading itself, on a document the caret alone, so the two carry their
+ * own state rather than sharing one shape. */
+function isOpen(key) {
+  return !collapsed.has(key);
+}
+
+function setOpen(key, open) {
+  if (open) collapsed.delete(key);
+  else collapsed.add(key);
+  remember();
+}
+
+function show(key, body, controls) {
+  const open = isOpen(key);
+  body.hidden = !open;
+  for (const control of controls) {
+    control.setAttribute("aria-expanded", String(open));
+  }
+}
+
+/* A category and the documents under it. The heading opens and closes them,
+ * and the whole heading is the control, because nothing else on it is
+ * clickable — a document's row is, so there the caret is a control of its own. */
+function renderBranch(branch, depth, parent = elements.catalog) {
+  const body = document.createElement("div");
+  body.className = "branch";
+
+  const key = `category:${branch.name}`;
+  const caret = span("", "caret");
+  caret.setAttribute("aria-hidden", "true");
+
+  const heading = document.createElement("button");
+  heading.type = "button";
+  heading.className = "category";
+  heading.style.paddingLeft = `${depth}rem`;
+  heading.append(caret, span(branch.name || NO_CATEGORY, "name"));
+  heading.addEventListener("click", () => {
+    setOpen(key, !isOpen(key));
+    show(key, body, [heading]);
+  });
+  show(key, body, [heading]);
+
+  parent.append(heading, body);
+
   for (const record of branch.documents) {
-    renderDocument(record, depth + 1);
+    renderDocument(record, depth + 1, body);
   }
   for (const child of branch.children) {
-    renderBranch(child, depth + 1);
+    renderBranch(child, depth + 1, body);
   }
+}
+
+/* A document's caret: the row asks about the document, so the caret is what
+ * opens and closes what the catalog says about it. */
+function caretFor(key, body) {
+  const caret = document.createElement("button");
+  caret.type = "button";
+  caret.className = "caret";
+  caret.setAttribute("aria-label", "Description");
+  caret.addEventListener("click", () => {
+    setOpen(key, !isOpen(key));
+    show(key, body, [caret]);
+  });
+  show(key, body, [caret]);
+  return caret;
 }
 
 /* `record`, not `document`: a parameter of that name shadows the browser's own
  * `document` for the whole function, and the first `document.createElement`
  * inside it is then a call on the JSON object rather than on the page. */
-function renderDocument(record, depth) {
+function renderDocument(record, depth, parent = elements.catalog) {
   const group = document.createElement("div");
+  group.className = "record";
+  group.style.paddingLeft = `${depth}rem`;
 
-  const row = document.createElement("button");
-  row.type = "button";
-  row.className = "document";
-  row.style.paddingLeft = `${depth}rem`;
-  row.title = record.path;
-
-  row.append(span(record.title, "title"));
-  row.append(span(record.status, `status ${record.status}`));
-  if (record.pages) {
-    row.append(span(`${record.pages} p.`, "pages"));
-  }
-
-  row.addEventListener("click", () => chooseDocument(record.path));
-  group.append(row);
+  const key = `document:${record.path}`;
 
   /* What the catalog says the document is about, written by `scripts.describe`
-   * and empty until it has been run. A row with nothing to say says nothing:
-   * the line is here rather than a placeholder. */
-  if (record.description) {
-    const described = line(record.description, "description");
-    described.style.paddingLeft = `${depth + 1}rem`;
+   * and absent until it has been run for this document. One with nothing said
+   * about it says nothing: the line is here rather than a placeholder, and
+   * clicking it asks about the document the same way clicking the row does. */
+  const described = record.description
+    ? line(record.description, "description")
+    : null;
+  if (described) {
     described.addEventListener("click", () => chooseDocument(record.path));
-    group.append(described);
   }
 
-  elements.catalog.append(group);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "document";
+  button.title = record.path;
+  button.append(span(record.title, "title"));
+  button.append(span(record.status, `status ${record.status}`));
+  if (record.pages) {
+    button.append(span(`${record.pages} p.`, "pages"));
+  }
+  button.addEventListener("click", () => chooseDocument(record.path));
+
+  const row = document.createElement("div");
+  row.className = "row";
+  // A blank in the caret's place when there is nothing to open, so that the
+  // titles stay in one column whether a document has a description or not.
+  row.append(described ? caretFor(key, described) : span("", "caret blank"), button);
+
+  group.append(row);
+  if (described) group.append(described);
+  parent.append(group);
 }
 
 /* ------------------------------------------------------------------ scope */
@@ -308,14 +387,6 @@ function addTurn(role, text = "") {
   return turn;
 }
 
-function heading(text, depth = 0) {
-  const element = document.createElement("p");
-  element.className = "category";
-  element.style.paddingLeft = `${depth}rem`;
-  element.textContent = text;
-  return element;
-}
-
 function line(text, className) {
   const element = document.createElement("p");
   element.className = className;
@@ -406,8 +477,10 @@ function renderCatalog(view) {
 
   for (const branch of view.categories) renderBranch(branch, 0);
   if (view.uncategorized.length) {
-    elements.catalog.append(heading("no category"));
-    for (const record of view.uncategorized) renderDocument(record, 1);
+    // The documents filed under no category are a group like any other, and an
+    // empty name is what a category cannot be — which is what makes it theirs,
+    // and the key the panel remembers them by.
+    renderBranch({ name: "", documents: view.uncategorized, children: [] }, 0);
   }
 }
 

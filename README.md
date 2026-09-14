@@ -142,10 +142,13 @@ python -m scripts.serve     # http://127.0.0.1:8000
 ```
 
 The catalog is on the left, grouped by category, each document with its title, its
-description and its status; clicking a document asks about that document. The conversation is
-on the right, and the sources of the answer appear as soon as the search is done, while the
-answer is still being written. The selector at the top chooses what the next question is asked of, and prints the
-scope in the same words the console prints it in.
+description and its status; clicking a document asks about that document. A category opens
+and closes on a click, and so does a document's description — from the triangle beside it,
+because the rest of the row is what asks the question — and the panel opens the way it was
+left. The conversation is on the right, and the sources of the answer appear as soon as the
+search is done, while the answer is still being written. The selector at the top chooses what
+the next question is asked of, and prints the scope in the same words the console prints it
+in.
 
 Under each answer there is a line saying what was searched for. It is not always the question
 as it was typed: the question is first rewritten together with the conversation so far, so

@@ -113,17 +113,76 @@ h2 {
   overflow-y: auto;
 }
 
+/* A category or a description that has been put away keeps its place in the
+ * markup and is not drawn. Stated rather than left to the browser's own rule,
+ * which any `display` further down would quietly undo. */
+.tree [hidden] {
+  display: none;
+}
+
+/* The triangle that opens and closes: on a category it turns with the heading
+ * it sits in, on a document it is a button and carries its own state. */
+.caret {
+  flex: none;
+  width: 1.1rem;
+  padding: 0.25rem 0;
+  background: none;
+  border: 0;
+  color: var(--quiet);
+  font-size: 0.7rem;
+  line-height: 1;
+  text-align: left;
+  cursor: pointer;
+}
+
+.caret::before {
+  content: "▸";
+}
+
+.caret[aria-expanded="true"]::before,
+.category[aria-expanded="true"] .caret::before {
+  content: "▾";
+}
+
+/* Nothing to open: the caret keeps its place so that titles stay in one column,
+ * and a hidden button is not one to click. */
+.caret.blank {
+  visibility: hidden;
+}
+
 .category {
+  display: flex;
+  gap: 0.35rem;
+  align-items: baseline;
+  width: 100%;
   margin: 0.6rem 0 0.2rem;
+  padding: 0.15rem 0.4rem 0.15rem 0;
+  background: none;
+  border: 0;
+  border-radius: 6px;
   font-weight: 600;
   font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.category:hover {
+  background: var(--ground);
+}
+
+.record .row {
+  display: flex;
+  align-items: baseline;
 }
 
 .document {
   display: flex;
+  flex: 1;
+  /* Without this the row refuses to shrink and the title cannot be ellipsised:
+   * a flex item's minimum width is its content unless it is said otherwise. */
+  min-width: 0;
   gap: 0.5rem;
   align-items: baseline;
-  width: 100%;
   padding: 0.25rem 0.4rem;
   background: none;
   border: 0;
@@ -158,6 +217,7 @@ h2 {
  * asks about the document the same way clicking the row does. */
 .description {
   margin: 0.05rem 0 0.5rem;
+  padding-left: 1rem;
   padding-right: 0.4rem;
   color: var(--quiet);
   font-size: 0.78rem;
