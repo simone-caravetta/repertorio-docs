@@ -952,6 +952,10 @@ function renderCatalog() {
   ticks.clear();
   headings.clear();
   titles.clear();
+  // Said here rather than where the mode is turned on, so that what the tree is
+  // drawn with and what it says of itself cannot come apart: the line under a row
+  // is indented by the tick column, and the tick column is the mode.
+  elements.catalog.classList.toggle("several", several);
   elements.catalog.replaceChildren();
 
   if (catalogView.empty) {

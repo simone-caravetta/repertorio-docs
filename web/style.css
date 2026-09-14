@@ -32,8 +32,11 @@ body {
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
+/* The banner is the first cell of the page's own grid and not a band above it,
+ * so that the conversation beside it can start at the same height. It carries no
+ * padding of its own: the grid's gap is what separates it from the panel below. */
 header {
-  padding: 1rem 0;
+  grid-area: head;
 }
 
 h1 {
@@ -87,8 +90,10 @@ button {
  * conversation it is: the list behind it is the list of them. It is a select,
  * so the list is the platform's own and there is no menu of ours to write. At
  * the left of the row and taking what is left of it, so a long title is
- * clipped rather than pushing the panel wider. */
-.title {
+ * clipped rather than pushing the panel wider. Not called `title`, which is what
+ * a document's own title is called in the tree: the caret below is drawn on this
+ * element, and under that name it was drawn on every document's title too. */
+.picker {
   position: relative;
   min-width: 0;
 }
@@ -96,7 +101,7 @@ button {
 /* A select is a replaced element and takes no generated content, so the caret
  * it would have drawn itself is drawn here, on the element that holds it. The
  * select keeps the room, and the caret takes no clicks. */
-.title::after {
+.picker::after {
   content: "▾";
   position: absolute;
   top: 50%;
@@ -162,17 +167,43 @@ button.quiet:disabled {
   color: var(--failed);
 }
 
+/* The page as one block: the banner and the catalog down the left, the
+ * conversation down the right from the very top, level with the banner rather
+ * than starting below it. It is as tall as the window and no taller — the two
+ * lists inside it are what scroll, the page is not. The body's 1rem at the foot
+ * is the only thing taken off the window's height. */
 main {
   display: grid;
   grid-template-columns: minmax(15rem, 22rem) 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "head chat"
+    "catalog chat";
   gap: 1rem;
-  align-items: start;
+  align-items: stretch;
   max-width: 80rem;
+  height: calc(100vh - 1rem);
 }
 
+/* Stacked, there is no second column for the conversation to fill and no fixed
+ * height worth keeping: the page goes back to being as tall as what is in it. */
 @media (max-width: 50rem) {
   main {
     grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    grid-template-areas:
+      "head"
+      "catalog"
+      "chat";
+    height: auto;
+  }
+
+  /* Nothing gives either panel a height here, so the two lists are capped the
+   * way they were before the page became one block. */
+  .tree,
+  .messages {
+    flex: none;
+    max-height: 60vh;
   }
 }
 
@@ -208,8 +239,25 @@ h2 {
   border-radius: 10px;
 }
 
+/* A column, so that the tree below the heading takes what is left of the panel
+ * and scrolls in it rather than pushing the panel taller than the page. */
+.catalog {
+  grid-area: catalog;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* What a row is made of, said once: the box in the tick column and the caret are
+ * the same width, and the gap between one control in a row and the next is what
+ * keeps a box and a caret apart. The line under a row is indented by the same
+ * sum, which is what starts it under the row's title rather than under the
+ * controls — a line sitting where the boxes are is a line in the way of them. */
 .tree {
-  max-height: 70vh;
+  --box: 1.1rem;
+  --gap: 0.5rem;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -224,7 +272,7 @@ h2 {
  * it sits in, on a document it is a button and carries its own state. */
 .caret {
   flex: none;
-  width: 1.1rem;
+  width: var(--box);
   padding: 0.25rem 0;
   background: none;
   border: 0;
@@ -283,8 +331,8 @@ h2 {
  * column of their own, and the indent of the tree is on the row it sits in. */
 .tick {
   flex: none;
-  width: 1.1rem;
-  height: 1.1rem;
+  width: var(--box);
+  height: var(--box);
   margin: 0;
   accent-color: var(--accent);
   cursor: pointer;
@@ -297,9 +345,11 @@ h2 {
 }
 
 /* A row of the tree: a tick, a control, and what it is about. A document's row
- * and a category's heading are both one. */
+ * and a category's heading are both one. The gap is what the mode needs: a box
+ * and the caret beside it would otherwise sit against each other. */
 .row {
   display: flex;
+  gap: var(--gap);
   align-items: baseline;
 }
 
@@ -325,6 +375,8 @@ h2 {
 
 .document .title {
   flex: 1;
+  /* The shrink the row needs, one level in: here it is the text that is cut. */
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -341,16 +393,23 @@ h2 {
 }
 
 /* What the catalog says the document is about. It belongs to the row above it,
- * so it is indented further in and quieter than the row itself, and clicking it
- * asks about the document the same way clicking the row does. */
+ * so it is indented to start where that row's title starts — the caret, the gap
+ * after it and the row's own padding — and is quieter than the row itself;
+ * clicking it asks about the document the same way clicking the row does. */
 .description {
   margin: 0.05rem 0 0.5rem;
-  padding-left: 1rem;
+  padding-left: calc(var(--box) + var(--gap) + 0.4rem);
   padding-right: 0.4rem;
   color: var(--quiet);
-  font-size: 0.78rem;
+  font-size: 0.85rem;
   line-height: 1.35;
   cursor: pointer;
+}
+
+/* In the mode the title has moved along by the tick column, and the line under
+ * it goes with the title rather than staying behind under the boxes. */
+.tree.several .description {
+  padding-left: calc(2 * (var(--box) + var(--gap)) + 0.4rem);
 }
 
 .empty {
@@ -410,21 +469,22 @@ h2 {
 }
 
 .chat {
+  grid-area: chat;
   display: flex;
   flex-direction: column;
   /* Without this the panel refuses to shrink below the width of its widest
-   * line, and a long title would widen the grid track the panel sits in. */
+   * line, and a long title would widen the grid track the panel sits in. The
+   * height is the grid's to give: the panel spans both of its rows. */
   min-width: 0;
-  min-height: 60vh;
+  min-height: 0;
 }
 
-/* The head above it takes a line of the panel's height, which is what the cap
- * gives back, so that a conversation long enough to scroll it still ends where
- * it ended before the head was there. */
+/* What is left of the panel between the head and the composer, and what scrolls
+ * when the conversation is longer than that. */
 .messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  max-height: 65vh;
   padding-right: 0.5rem;
 }
 
