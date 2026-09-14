@@ -9,28 +9,55 @@
   <body>
     <header>
       <h1>Repertorio Docs</h1>
-      <div class="scope">
-        <label for="scope">Ask about</label>
-        <select id="scope"></select>
-        <span id="scope-label" class="label"></span>
-        <button type="button" id="new-thread" class="quiet">
-          New conversation
-        </button>
-      </div>
     </header>
 
     <main>
       <aside class="catalog">
-        <h2>Documents</h2>
+        <div class="panel-head">
+          <h2>Documents</h2>
+          <button
+            type="button"
+            id="select-several"
+            class="quiet"
+            aria-pressed="false"
+            disabled
+          >
+            Select several
+          </button>
+        </div>
         <div id="catalog" class="tree"></div>
         <div id="selection" class="selection" hidden>
-          <span id="selection-count" class="count"></span>
-          <button type="button" id="ask-these">Ask about these</button>
-          <button type="button" id="clear-selection" class="quiet">Clear</button>
+          <label class="visually-hidden" for="group-title"
+            >Conversation title</label
+          >
+          <input
+            type="text"
+            id="group-title"
+            placeholder="Name this conversation"
+          />
+          <div class="bar">
+            <span id="selection-count" class="count"></span>
+            <button type="button" id="start-group" disabled>Start</button>
+            <button type="button" id="clear-selection" class="quiet">
+              Clear
+            </button>
+          </div>
         </div>
       </aside>
 
       <section class="chat">
+        <div class="chat-head">
+          <div class="title">
+            <label class="visually-hidden" for="scope">Conversation</label>
+            <select id="scope"></select>
+          </div>
+          <div class="bar">
+            <span id="scope-label" class="label"></span>
+            <button type="button" id="new-thread" class="quiet">
+              New conversation
+            </button>
+          </div>
+        </div>
         <div id="messages" class="messages"></div>
         <form id="composer">
           <label class="visually-hidden" for="question">Question</label>

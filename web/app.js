@@ -25,11 +25,25 @@ let scope = {};
  * document again finds the questions already asked about it. */
 let threads = {};
 
-/* The documents ticked in the catalog. They are not the scope: the scope is what
- * a question is asked of, and these are the group being built for the next one.
- * A tick cannot re-scope as it is made, or the first document ticked would take
- * the scope and the second would replace it, and two could never be chosen. */
+/* The documents ticked in the catalog, which exist only while the ticks do: the
+ * group being built, and nothing else. A tick cannot re-scope as it is made — the
+ * first document ticked would take the scope and the second would replace it, and
+ * two could never be chosen. Turning the mode on fills this from the scope in
+ * force, so an existing group can be extended; turning it off empties it. */
 const selected = new Set();
+
+/* Whether the ticks are on screen. Off is the panel as it was: a row is a title
+ * and what the catalog says about it, and nothing else. The button beside
+ * `Documents` turns it on, and `aria-pressed` says which it is, so the state is
+ * on screen and not only here. */
+let several = false;
+
+/* What the reader has called the groups they made, by scope key. Only a group is
+ * named: a document and a category are named by what they are. It is the reader's
+ * and only the reader's, so nothing removes an entry — not even a new
+ * conversation, a name belonging to the set of documents and not to the
+ * conversation about them. */
+let groupNames = {};
 
 /* A scope as one string, to look its conversation up by. The same documents
  * picked twice are the same conversation, and the whole library is the empty
@@ -73,9 +87,11 @@ const elements = {
   question: document.getElementById("question"),
   send: document.getElementById("send"),
   newThread: document.getElementById("new-thread"),
+  selectSeveral: document.getElementById("select-several"),
   selection: document.getElementById("selection"),
   selectionCount: document.getElementById("selection-count"),
-  askThese: document.getElementById("ask-these"),
+  groupTitle: document.getElementById("group-title"),
+  startGroup: document.getElementById("start-group"),
   clearSelection: document.getElementById("clear-selection"),
 };
 
@@ -84,7 +100,7 @@ const elements = {
 function remember() {
   localStorage.setItem(
     STORAGE_KEY,
-    JSON.stringify({ scope, threads, collapsed: [...collapsed] })
+    JSON.stringify({ scope, threads, collapsed: [...collapsed], groupNames })
   );
 }
 
@@ -95,6 +111,8 @@ function recall() {
       scope = saved.scope || {};
       threads = saved.threads || {};
       collapsed = new Set(saved.collapsed || []);
+      // Written before a group could be named, and so without any.
+      groupNames = saved.groupNames || {};
       if (!saved.threads && saved.threadId) {
         // Written before conversations were kept one to a scope, when the one
         // thread it held was the thread of the scope it was on.
@@ -167,11 +185,16 @@ function renderBranch(branch, depth, parent = elements.catalog) {
 
   /* The tick cannot live in the heading: it is a button, and a button holds no
    * other control. The indent is on the row, so that the tick is indented with
-   * the heading rather than beside it. */
+   * the heading rather than beside it. With the ticks away the heading is the
+   * row, and no blank stands in the tick's place: the width goes back to the
+   * name. */
   const row = document.createElement("div");
   row.className = "row";
   row.style.paddingLeft = `${depth}rem`;
-  row.append(tickForCategory(branch.name) || span("", "tick blank"), heading);
+  if (several) {
+    row.append(tickForCategory(branch.name) || span("", "tick blank"));
+  }
+  row.append(heading);
 
   parent.append(row, body);
 
@@ -276,10 +299,13 @@ function renderDocument(record, depth, parent = elements.catalog) {
 
   const row = document.createElement("div");
   row.className = "row";
-  // A blank in the tick's place, and another in the caret's when there is
-  // nothing to open, so that the ticks and the titles each stay in one column
-  // whether a document can be chosen or described, or neither.
-  row.append(tickForDocument(record) || span("", "tick blank"));
+  // In the mode, a blank stands in the tick's place where a document cannot be
+  // ticked, and another in the caret's where there is nothing to open, so that
+  // the ticks, the carets and the titles each stay in a column. Out of it there
+  // is no tick column at all.
+  if (several) {
+    row.append(tickForDocument(record) || span("", "tick blank"));
+  }
   row.append(described ? caretFor(key, described) : span("", "caret blank"), button);
 
   group.append(row);
@@ -309,6 +335,14 @@ function tickForDocument(record) {
 
 /* --------------------------------------------------------------- selection */
 
+/* The title the field was last given by itself, and whether the reader has since
+ * typed in it. Two things and not one: comparing the field with what it was
+ * given cannot tell "the reader wrote this" from "a default that has been
+ * superseded". Tick a second document and untick it, and the field still reads
+ * two titles for a group of one, with nobody having written anything. */
+let suggested = "";
+let touched = false;
+
 /* A category is ticked when everything under it is, and half-ticked when only
  * some of it is. Read off `selected` rather than off the boxes below it, so the
  * two cannot drift: the boxes are the drawn form of one set, not four copies of
@@ -324,24 +358,69 @@ function refreshTicks() {
     box.indeterminate = taken > 0 && taken < paths.length;
   }
 
-  elements.selection.hidden = selected.size === 0;
+  // The bar is the mode's, so it is on screen exactly when the mode is: it holds
+  // the title, which is what the reader has to give, and hiding it while nothing
+  // is ticked would take the field away as it was being typed in.
+  elements.selection.hidden = !several;
   elements.selectionCount.textContent =
-    selected.size === 1 ? "1 document" : `${selected.size} documents`;
+    selected.size === 0
+      ? "nothing selected"
+      : selected.size === 1
+        ? "1 document"
+        : `${selected.size} documents`;
+  elements.startGroup.disabled = selected.size === 0;
+  seedTitle([...selected].sort());
 }
 
-/* The ticks are the group being built, or the group in force, and never a draft
- * left over from the one before. So they follow the scope: choosing a group is
- * choosing its documents back, and choosing anything else leaves them empty. */
-function tickTheScope() {
+/* The title field follows the ticks until the reader types in it, and starts
+ * from the name the group already has. That second part is what makes the round
+ * trip come back: tick one more and untick it, and the field returns to the name
+ * rather than walking away from it to a generated default, which is how a name
+ * gets lost — the field ends up holding the default, and Start then reads it as
+ * "no name to keep". */
+function seedTitle(paths) {
+  if (touched) return;
+  suggested = paths.length ? titleOf({ documents: paths }) : "";
+  elements.groupTitle.value = suggested;
+}
+
+/* Turning the mode on shows the ticks and seeds them from the scope in force, so
+ * that one document can be grown into a group and an existing group extended.
+ * Turning it off takes the ticks away, and the group with them. */
+function setSeveral(on) {
+  several = on;
+  elements.selectSeveral.setAttribute("aria-pressed", String(on));
   selected.clear();
-  for (const path of scope.documents || []) selected.add(path);
+  // The field goes back to being the page's, and `refreshTicks` below gives it
+  // the title of whatever is ticked now.
+  touched = false;
+  if (on) {
+    for (const path of scope.documents || []) selected.add(path);
+  }
+  // The panel is redrawn, which resets the scroll, so it is put back: turning
+  // the mode on is not a reason to lose your place in a long catalog.
+  const scrolled = elements.catalog.scrollTop;
+  renderCatalog();
+  elements.catalog.scrollTop = scrolled;
   refreshTicks();
 }
 
-/* The ticks become the scope. Sorted, so that the same documents ticked in
+/* The ticks become a conversation. Sorted, so that the same documents ticked in
  * another order are the same group and find the same conversation. */
-function askAboutThese() {
-  chooseScope({ documents: [...selected].sort() });
+function startGroup() {
+  const paths = [...selected].sort();
+  if (!paths.length) return;
+
+  const key = scopeKey({ documents: paths });
+  const title = elements.groupTitle.value.trim();
+  // A name is written only when it says something the scope does not say by
+  // itself, so this holds names and not echoes of the defaults. An empty name is
+  // the reader clearing one, which is the same as never having given it.
+  if (title && title !== groupLabel(paths)) groupNames[key] = title;
+  else delete groupNames[key];
+
+  setSeveral(false);
+  chooseScope({ documents: paths });
 }
 
 /* ------------------------------------------------------------------ scope */
@@ -354,7 +433,6 @@ async function chooseScope(next) {
   // the selector is pointed at the one now on.
   fillScopeSelect();
   showScopeInSelect();
-  tickTheScope();
 
   await showConversation();
   await describeScope();
@@ -415,9 +493,9 @@ function chooseDocument(path) {
  * filled once — starting a conversation is what puts a scope among them — so the
  * listener is attached outside, or every rebuild would add another. */
 function fillScopeSelect() {
-  elements.scope.replaceChildren(option("", "the whole library"));
+  elements.scope.replaceChildren(option("", titleOf({})));
   for (const [value, paths] of groups()) {
-    elements.scope.append(option(value, groupLabel(paths), paths.join("\n")));
+    elements.scope.append(option(value, titleOf({ documents: paths }), paths.join("\n")));
   }
   for (const path of offeredDocuments()) {
     elements.scope.append(option(documentValue(path), documentLabel(path), path));
@@ -429,15 +507,23 @@ function fillScopeSelect() {
 
 /* The groups the select should offer, as the value its option carries and the
  * paths in it. A group is one when a conversation has been had about it — read
- * off `threads`, whose `documents:` keys are exactly the groups — or when it is
- * the group in force, which is one the reader has just built and not yet asked
- * anything of. There is no list of groups to keep in step with this, and a
- * group's option lives exactly as long as its conversation, which is the rule
- * every other scope already follows. */
+ * off `threads`, whose `documents:` keys are exactly the groups — when the reader
+ * has named it, or when it is the group in force, which is one just built and not
+ * yet asked anything of.
+ *
+ * `groupNames` is the one table here that only grows, and it grows by what the
+ * reader named on purpose. It has to be in this union: a thread is made when the
+ * first answer arrives, so a group named and then left before asking anything is
+ * in neither `threads` nor the scope in force, and without this its name would
+ * sit in storage with no way back to it. */
 function groups() {
   const known = new Map();
   for (const key of Object.keys(threads)) {
     const paths = key.startsWith("documents:") ? pathsOf(key) : null;
+    if (paths) known.set(key, paths);
+  }
+  for (const key of Object.keys(groupNames)) {
+    const paths = pathsOf(key);
     if (paths) known.set(key, paths);
   }
   if ((scope.documents || []).length) {
@@ -479,6 +565,26 @@ function groupLabel(paths) {
   const names = paths.map((path) => documentLabel(path));
   if (names.length <= 2) return names.join(", ");
   return `${names.slice(0, 2).join(", ")} +${names.length - 2}`;
+}
+
+/* What a conversation is called, which is what the select shows as the chat's
+ * title and what the title field starts from. Only a group has a name of its
+ * own, because only a group is a thing the reader made; everything else is named
+ * by what it is. A group the reader has not named is named by what it holds, so a
+ * group from before the page could name them has a title already and nothing had
+ * to be migrated. The whole library is the one scope named by a word rather than
+ * by the server's string for it, that string being "whole library" and reading
+ * as a fragment on its own. */
+function titleOf(of) {
+  if (of.document != null) return documentLabel(of.document);
+  if (of.category !== undefined) return of.category || NO_CATEGORY;
+  const paths = [...(of.documents || [])].sort();
+  if (paths.length) {
+    // By the key, which is the sorted set: the same documents picked twice are
+    // one conversation and so one name.
+    return groupNames[scopeKey({ documents: paths })] || groupLabel(paths);
+  }
+  return "the whole library";
 }
 
 /* Point the select at the scope in force. Every scope it can be on is among the
@@ -708,10 +814,26 @@ elements.composer.addEventListener("submit", (event) => {
 
 elements.newThread.addEventListener("click", () => newConversation());
 
-elements.askThese.addEventListener("click", () => askAboutThese());
+elements.selectSeveral.addEventListener("click", () => setSeveral(!several));
+
+elements.startGroup.addEventListener("click", () => startGroup());
+
+/* The reader typing is the only thing that makes the field theirs: no later tick
+ * moves it, and the name they gave is the name they keep. */
+elements.groupTitle.addEventListener("input", () => {
+  touched = true;
+});
+
+elements.groupTitle.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    startGroup();
+  }
+});
 
 elements.clearSelection.addEventListener("click", () => {
   selected.clear();
+  touched = false;
   refreshTicks();
 });
 
@@ -745,7 +867,10 @@ async function start() {
   renderCatalog();
   fillScopeSelect();
   showScopeInSelect();
-  tickTheScope();
+
+  // Only now, the panel being drawn: until the catalog lands there is nothing to
+  // tick, and the mode would draw over it that there is no catalog here.
+  elements.selectSeveral.disabled = false;
 
   await describeScope();
   await showConversation();

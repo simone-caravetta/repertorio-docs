@@ -146,20 +146,31 @@ description and its status; clicking a document asks about that document. A cate
 and closes on a click, and so does a document's description — from the triangle beside it,
 because the rest of the row is what asks the question — and the panel opens the way it was
 left. The conversation is on the right, and the sources of the answer appear as soon as the
-search is done, while the answer is still being written. The selector at the top chooses what
-the next question is asked of, and prints the scope in the same words the console prints it
-in.
+search is done, while the answer is still being written.
+
+The title of the conversation is also the control that changes it: it names the document or
+the group being asked about, and clicking it drops the list it was picked from — every
+conversation there is, and the documents, the categories and the whole library with them. So
+moving between conversations is picking one from a list. Under the title is the scope in the
+words the console prints it in, which is what the next question will be asked of, and beside
+that **New conversation**.
 
 Several documents can be asked about together, the way `--documents` does it from the
-console. The box at the left of a row ticks that document, and the box at the left of a
-category ticks every indexed document at or below it — the same set the server resolves that
-category to when it is picked from the selector, and never a document that is not indexed,
-which would make the whole group refuse. What is ticked is counted at the foot of the panel,
-where **Ask about these** starts the conversation on it and **Clear** empties it. The ticks
-stay after asking, so a group can be extended by ticking one more and asking again, and
-change when the scope changes, being the group in force as much as the one being built. A
-group that has been asked about appears in the selector like any other scope, named after the
-titles it holds, and coming back to it finds its conversation.
+console. **Select several**, beside `Documents`, puts a box at the left of every row: the box
+on a document ticks that document, and the box on a category ticks every indexed document at
+or below it — the same set the server resolves that category to when it is picked from the
+selector. A document that is not indexed has no box, because one of those in a group makes
+the whole group refuse. What is ticked is counted at the foot of the panel, above a field
+proposing a title for the group; keep it or write another, and **Start** begins the
+conversation on those documents under that name. The mode ends there, and the ticks with it,
+so extending a group means turning it on again with the group's own documents already ticked.
+
+A group keeps the title it was given, which is what tells two groups of the same size apart —
+the server calls both of them `2 documents`. The titles are the page's own, in the browser's
+storage beside the scope and the conversations, and a group that has been named stays in the
+list even with no conversation on it. A document and a category are named by what they are.
+Nothing removes a title, not even **New conversation**: a title belongs to the set of
+documents, not to the conversation about them.
 
 Under each answer there is a line saying what was searched for. It is not always the question
 as it was typed: the question is first rewritten together with the conversation so far, so
@@ -177,7 +188,7 @@ one and come back, and the questions you asked about the first are still there. 
 conversation per scope rather than one running conversation, because every question is
 rewritten together with the conversation it is asked in, and the history of a question about
 one document is not context for a question about another. **New conversation**, beside the
-scope, starts one over.
+scope, starts one over — and only that: the title the group was given stays on it.
 
 The server listens on `127.0.0.1` only. `--host 0.0.0.0` opens it to the network, and there is
 no authentication behind it — anyone who can reach the port can read the whole library and

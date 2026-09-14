@@ -166,7 +166,7 @@ about them.
       description is shown under the title when the catalog holds one, which it did not
       until Phase 5's `scripts.describe` began writing them.
 - [x] Chat panel with a scope selector. The selector offers the whole library and every
-      category, and a document is picked by clicking it in the catalog. The label beside it is
+      category, and a document is picked by clicking it in the catalog. The label under it is
       the string `resolve_scope` produces, character for character the one the console prints.
       Under each answer the page shows the query the search was run on, which the graph has
       already rewritten with the conversation in hand and which is therefore not always the
@@ -174,17 +174,23 @@ about them.
       covers as well as with the passages found: which documents there are is not a thing a
       similarity search can say, and asked "che documenti hai?" the page answered with the one
       document that happened to be retrieved.
-- [x] Several documents at once, ticked in the catalog panel, which the server has taken since
-      `resolve_scope` was written and the page could not ask for. A category's tick takes every
-      indexed document at or below it, so the tick and the same category picked from the
-      selector are one set; a document that is not indexed has no tick, because one of those in
-      a group makes the whole group refuse. The ticks accumulate and a bar at the foot of the
-      panel applies them, rather than applying themselves as they are made, which would let the
-      first tick take the scope and the second replace it and two documents never be chosen.
-      **New conversation** keeps meaning only what it meant — forget this scope's history.
-      Groups are not named and not a table: a group is offered by the selector while it has a
-      conversation, read off the threads the page already keeps, so there is nothing that only
-      grows and nothing to keep in step.
+- [x] Several documents at once, ticked in the catalog panel behind a **Select several**
+      button, which the server has taken since `resolve_scope` was written and the page could
+      not ask for. A category's tick takes every indexed document at or below it, so the tick
+      and the same category picked from the selector are one set; a document that is not indexed
+      has no tick, because one of those in a group makes the whole group refuse. The ticks
+      accumulate and a bar at the foot of the panel applies them, rather than applying
+      themselves as they are made, which would let the first tick take the scope and the second
+      replace it and two documents never be chosen.
+- [x] A conversation has a title: the document or the group it is about, proposed from the
+      group's documents and editable when it is started. The scope selector is restyled as that
+      title rather than sitting in the page header, so one control names the conversation and
+      drops the list of the others — a heading beside a menu would be two controls showing one
+      fact. **New conversation** keeps meaning only what it meant, forget this scope's history.
+      The titles are the page's, in localStorage beside the scope→thread map, and they are the
+      one table here that only grows: nothing prunes it, a title belonging to the set of
+      documents rather than to the conversation about them. Bounded by what the reader names on
+      purpose, and the reason a group can be offered by name with no conversation on it yet.
 - [x] Persistent checkpointer (SQLite) so conversations survive a restart: `build_graph` takes
       one, the server opens `data/conversations.sqlite3` for the life of the process, and a
       reloaded page reads its conversation back through `GET /api/threads/{id}`. The page

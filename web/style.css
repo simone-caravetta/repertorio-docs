@@ -33,10 +33,6 @@ body {
 }
 
 header {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 1.5rem;
-  align-items: baseline;
   padding: 1rem 0;
 }
 
@@ -46,12 +42,26 @@ h1 {
   font-weight: 600;
 }
 
-.scope {
+/* The head of the conversation: its title over the scope the server resolved
+ * and the one control that throws the conversation away. Quiet throughout,
+ * because it is a heading and not the conversation; the title inside is not,
+ * being the one thing there the reader looks for. */
+.chat-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--line);
+  color: var(--quiet);
+}
+
+/* A row of controls with something to say at its left and buttons at its
+ * right. Used by the head above and by the bar at the foot of the panel. */
+.bar {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
   align-items: baseline;
-  color: var(--quiet);
 }
 
 select,
@@ -61,15 +71,56 @@ button {
   color: inherit;
 }
 
-select {
-  max-width: 22rem;
-  padding: 0.25rem 0.4rem;
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+/* The conversation's title, which is also the control that changes which
+ * conversation it is: the list behind it is the list of them. It is a select,
+ * so the list is the platform's own and there is no menu of ours to write. At
+ * the left of the row and taking what is left of it, so a long title is
+ * clipped rather than pushing the panel wider. */
+.title {
+  position: relative;
+  min-width: 0;
+}
+
+/* A select is a replaced element and takes no generated content, so the caret
+ * it would have drawn itself is drawn here, on the element that holds it. The
+ * select keeps the room, and the caret takes no clicks. */
+.title::after {
+  content: "▾";
+  position: absolute;
+  top: 50%;
+  right: 0.15rem;
+  transform: translateY(-50%);
+  color: var(--quiet);
+  font-size: 0.7rem;
+  pointer-events: none;
+}
+
+#scope {
+  width: 100%;
+  max-width: 100%;
+  padding: 0 1.3rem 0 0;
+  appearance: none;
+  overflow: hidden;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  color: var(--ink);
+  font-size: 1.05rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* It reads as a title, so the ring is what says it is a control and where the
+ * keyboard is. */
+#scope:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .label {
+  flex: 1;
   font-variant-numeric: tabular-nums;
 }
 
@@ -120,6 +171,21 @@ h2 {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--quiet);
+}
+
+/* The heading of the panel and the one control that belongs beside it rather
+ * than in the tree: the mode the ticks are in. */
+.panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.panel-head h2 {
+  margin-bottom: 0;
 }
 
 .catalog,
@@ -279,15 +345,17 @@ h2 {
   color: var(--quiet);
 }
 
-/* What is ticked, and the two things that can be done with it. It sits at the
- * foot of the panel, where the ticks are, and appears only while there is
- * something ticked. `[hidden]` is stated for the same reason the tree states it:
- * this rule's `display` would otherwise keep it on screen. */
+/* The mode's bar: the title the group is about to be kept under, what is
+ * ticked, and the two things that can be done with it. It sits at the foot of
+ * the panel, where the ticks are, and is on screen exactly while the mode is —
+ * it holds the field the reader types the title in, which is not a thing to
+ * take away because nothing is ticked yet. `[hidden]` is stated for the same
+ * reason the tree states it: this rule's `display` would otherwise keep it on
+ * screen. */
 .selection {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 0.5rem;
-  align-items: baseline;
   margin-top: 0.75rem;
   padding-top: 0.75rem;
   border-top: 1px solid var(--line);
@@ -297,6 +365,14 @@ h2 {
   display: none;
 }
 
+.selection input {
+  width: 100%;
+  padding: 0.3rem 0.4rem;
+  background: var(--ground);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
 .selection .count {
   flex: 1;
   color: var(--quiet);
@@ -304,8 +380,9 @@ h2 {
   font-variant-numeric: tabular-nums;
 }
 
-/* The one control that makes the ticks the scope. */
-#ask-these {
+/* The one control that makes the ticks the scope and the title the name the
+ * conversation keeps. */
+#start-group {
   padding: 0.15rem 0.6rem;
   background: var(--accent);
   border: 1px solid var(--accent);
@@ -315,16 +392,27 @@ h2 {
   cursor: pointer;
 }
 
+#start-group:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .chat {
   display: flex;
   flex-direction: column;
+  /* Without this the panel refuses to shrink below the width of its widest
+   * line, and a long title would widen the grid track the panel sits in. */
+  min-width: 0;
   min-height: 60vh;
 }
 
+/* The head above it takes a line of the panel's height, which is what the cap
+ * gives back, so that a conversation long enough to scroll it still ends where
+ * it ended before the head was there. */
 .messages {
   flex: 1;
   overflow-y: auto;
-  max-height: 70vh;
+  max-height: 65vh;
   padding-right: 0.5rem;
 }
 
