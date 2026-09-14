@@ -43,11 +43,14 @@ h1 {
 }
 
 /* The name, drawn rather than set: the heading above still says it for anything
- * that reads the page rather than looks at it. Full width of the page and no
- * more than that, so it takes the shape it was drawn in at every size. */
+ * that reads the page rather than looks at it. Capped, having been given the whole
+ * width of the page first and being much too large that way. 20rem puts it in the
+ * range the catalog panel beside it is laid out in, so the header stays smaller
+ * than the page it heads, and the width is still fluid below the cap. */
 .banner {
   display: block;
   width: 100%;
+  max-width: 20rem;
   height: auto;
 }
 
