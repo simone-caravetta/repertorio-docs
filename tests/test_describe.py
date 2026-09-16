@@ -18,7 +18,7 @@ from app.catalog import Catalog
 from app.descriptions import DescribeReport
 from app.lifecycle import sync_documents
 from scripts.describe import describe, parse_args
-from tests.helpers import FakeChatModel, FakeVectorStore
+from tests.helpers import EMBEDDING_MODEL, FakeChatModel, FakeVectorStore
 
 MANUAL = "manuals/manual.pdf"
 REPORT = "reports/report.pdf"
@@ -39,7 +39,9 @@ def argv(monkeypatch: pytest.MonkeyPatch) -> Callable[..., argparse.Namespace]:
 
 def index(documents_dir: Path, db_path: Path, store: FakeVectorStore) -> None:
     """A library already synced: both documents in the catalog, indexed."""
-    sync_documents(documents_dir, db_path, store, **CHUNKING)
+    sync_documents(
+        documents_dir, db_path, store, embedding_model=EMBEDDING_MODEL, **CHUNKING
+    )
 
 
 def run(
@@ -159,7 +161,9 @@ def test_a_document_with_no_vectors_is_refused(
 ) -> None:
     index(documents_dir, db_path, store)
     (documents_dir / REPORT).unlink()
-    sync_documents(documents_dir, db_path, store, **CHUNKING)
+    sync_documents(
+        documents_dir, db_path, store, embedding_model=EMBEDDING_MODEL, **CHUNKING
+    )
 
     with pytest.raises(SystemExit, match="is trashed"):
         run(db_path, documents_dir, FakeChatModel(replies=[]), paths=[REPORT])

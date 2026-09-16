@@ -21,24 +21,51 @@ _STATUSES_SQL = ", ".join(f"'{status}'" for status in STATUSES)
 
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS documents (
-    id            INTEGER PRIMARY KEY,
-    path          TEXT NOT NULL UNIQUE,
-    title         TEXT NOT NULL,
-    description   TEXT,
-    category      TEXT,
-    file_hash     TEXT,
-    status        TEXT NOT NULL DEFAULT 'queued'
-                  CHECK (status IN ({_STATUSES_SQL})),
-    page_count    INTEGER,
-    chunk_count   INTEGER,
-    error_message TEXT,
-    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    trashed_at    TEXT
+    id              INTEGER PRIMARY KEY,
+    path            TEXT NOT NULL UNIQUE,
+    title           TEXT NOT NULL,
+    description     TEXT,
+    category        TEXT,
+    file_hash       TEXT,
+    status          TEXT NOT NULL DEFAULT 'queued'
+                    CHECK (status IN ({_STATUSES_SQL})),
+    page_count      INTEGER,
+    chunk_count     INTEGER,
+    indexer         TEXT,
+    embedding_model TEXT,
+    error_message   TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    trashed_at      TEXT
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
 """
+
+# The columns a catalog written by an earlier version of this file does not have.
+# `CREATE TABLE IF NOT EXISTS` leaves an existing table exactly as it found it, so
+# a library indexed before a column was added never learns about it; SQLite has no
+# `ADD COLUMN IF NOT EXISTS`, and the table has to be asked what it holds.
+_ADDED_COLUMNS = (
+    ("indexer", "TEXT"),
+    ("embedding_model", "TEXT"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Give a catalog written before these columns existed the ones it lacks.
+
+    Additive and nothing else: no column is dropped or rewritten, and the rows
+    are left as they are, so a library indexed by an older version reads with
+    the new columns absent and is indexed again on the next run. Only reached on
+    a catalog this object was allowed to write — a read-only one is left exactly
+    as it was found.
+    """
+    known = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+
+    for name, kind in _ADDED_COLUMNS:
+        if name not in known:
+            conn.execute(f"ALTER TABLE documents ADD COLUMN {name} {kind}")
 
 
 def category_from_path(path: str) -> str | None:
@@ -81,6 +108,8 @@ class DocumentRecord:
     status: str
     page_count: int | None
     chunk_count: int | None
+    indexer: str | None
+    embedding_model: str | None
     error_message: str | None
     created_at: str
     updated_at: str
@@ -88,7 +117,18 @@ class DocumentRecord:
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> DocumentRecord:
-        return cls(**{field.name: row[field.name] for field in fields(cls)})
+        # A column the row does not carry reads as absent rather than raising.
+        # That is the truth about a catalog written before the column existed,
+        # and for a fingerprint it is also the useful answer: a document with
+        # none was not indexed the way the code in hand would index it, so the
+        # next run indexes it again.
+        known = row.keys()
+        return cls(
+            **{
+                field.name: row[field.name] if field.name in known else None
+                for field in fields(cls)
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -168,6 +208,7 @@ class Catalog:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             with self._connect() as conn:
                 conn.executescript(SCHEMA)
+                _migrate(conn)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -326,16 +367,31 @@ class Catalog:
         file_hash: str,
         page_count: int,
         chunk_count: int,
+        indexer: str | None = None,
+        embedding_model: str | None = None,
     ) -> None:
+        """Record a document as indexed, and what built the index.
+
+        `indexer` and `embedding_model` are the fingerprint of the run that wrote
+        the vectors: the reader and the cut, and the model that turned the text
+        into numbers. Together they are what the next sync compares against the
+        code it is running, because neither the file nor the vectors themselves
+        say what produced them.
+
+        They are absent by default, which is the honest record for a caller that
+        has no run behind it, and which the next sync reads as a document to
+        index again.
+        """
         self._write(
             """
             UPDATE documents
                SET status = 'indexed', file_hash = ?, page_count = ?,
-                   chunk_count = ?, error_message = NULL, trashed_at = NULL,
+                   chunk_count = ?, indexer = ?, embedding_model = ?,
+                   error_message = NULL, trashed_at = NULL,
                    updated_at = datetime('now')
              WHERE path = ?
             """,
-            (file_hash, page_count, chunk_count, path),
+            (file_hash, page_count, chunk_count, indexer, embedding_model, path),
             path,
         )
 

@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.catalog import Catalog
-from app.ingestion import compute_file_hash
+from app.ingestion import compute_file_hash, indexer_id
 from app.lifecycle import SyncReport, sync_documents
-from tests.helpers import SENTENCE, FakeVectorStore, make_pdf
+from tests.helpers import EMBEDDING_MODEL, SENTENCE, FakeVectorStore, make_pdf
 
 MANUAL = "manuals/manual.pdf"
 REPORT = "reports/report.pdf"
@@ -19,7 +19,31 @@ def run(
     store: FakeVectorStore | None,
     **kwargs: object,
 ) -> SyncReport:
-    return sync_documents(documents_dir, db_path, store, **CHUNKING, **kwargs)
+    """A run over a folder, with the sizes and the model a test may replace."""
+    return sync_documents(
+        documents_dir,
+        db_path,
+        store,
+        **{"embedding_model": EMBEDDING_MODEL, **CHUNKING, **kwargs},
+    )
+
+
+def restamp(
+    documents_dir: Path, db_path: Path, source: str, **fingerprint: object
+) -> None:
+    """Leave a document as a run of other code would have left it.
+
+    The file hash is kept as it is, so the only thing about the row that differs
+    is what built its index — which is the case nothing else in the sync looks
+    at, and so the one these tests are about.
+    """
+    Catalog(db_path).record_indexed(
+        source,
+        file_hash=compute_file_hash(documents_dir / source),
+        page_count=1,
+        chunk_count=1,
+        **fingerprint,  # type: ignore[arg-type]
+    )
 
 
 def edit(documents_dir: Path, source: str, text: str) -> None:
@@ -90,6 +114,9 @@ def test_unchanged_files_are_left_alone(
 
     report = run(documents_dir, db_path, store)
 
+    # Which also says what the run before left on the rows matches this one: a
+    # fingerprint that never matched would report every document as updated, on
+    # every run, for ever.
     assert report.skipped == [MANUAL, REPORT]
     assert report.added == []
     assert report.updated == []
@@ -250,6 +277,105 @@ def test_a_row_without_a_hash_is_picked_up_again(
     assert report.updated == [MANUAL]
     assert report.added == [REPORT]
     assert Catalog(db_path).get(MANUAL).status == "indexed"
+
+
+def test_what_built_the_index_is_written_on_the_row(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    """Nothing else carries it: not the file, and not the vectors."""
+    run(documents_dir, db_path, store)
+
+    record = Catalog(db_path).get(MANUAL)
+    assert record.indexer == indexer_id(**CHUNKING)
+    assert record.embedding_model == EMBEDDING_MODEL
+
+
+def test_a_document_indexed_by_an_older_reading_is_indexed_again(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    """The file is the same file and its hash still matches.
+
+    Only the fingerprint says that the code which made these vectors is not the
+    code in hand, so without it the index would go on answering from text the
+    reader would no longer produce.
+    """
+    run(documents_dir, db_path, store)
+    restamp(
+        documents_dir,
+        db_path,
+        MANUAL,
+        indexer="pymupdf-0|200/20",
+        embedding_model=EMBEDDING_MODEL,
+    )
+
+    report = run(documents_dir, db_path, store)
+
+    assert report.updated == [MANUAL]
+    assert report.skipped == [REPORT]
+    assert Catalog(db_path).get(MANUAL).indexer == indexer_id(**CHUNKING)
+
+
+def test_a_document_indexed_by_another_model_is_indexed_again(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    """The case that costs something, and the one nothing else can see.
+
+    Two models make two vector spaces, so a corpus moved to a new one has to be
+    made again — and no byte of any document has changed.
+    """
+    run(documents_dir, db_path, store)
+    restamp(
+        documents_dir,
+        db_path,
+        MANUAL,
+        indexer=indexer_id(**CHUNKING),
+        embedding_model="some-other-model",
+    )
+
+    report = run(documents_dir, db_path, store)
+
+    assert report.updated == [MANUAL]
+    assert Catalog(db_path).get(MANUAL).embedding_model == EMBEDDING_MODEL
+
+
+def test_the_cut_is_part_of_the_fingerprint(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    """A chunk size is part of what built an index, and the file has not moved.
+
+    Changing it and not rebuilding would leave every answer citing chunks cut to
+    the sizes the settings no longer name.
+    """
+    run(documents_dir, db_path, store)
+
+    report = run(documents_dir, db_path, store, chunk_size=300)
+
+    assert report.updated == [MANUAL, REPORT]
+    assert Catalog(db_path).get(MANUAL).indexer == indexer_id(
+        chunk_size=300, chunk_overlap=CHUNKING["chunk_overlap"]
+    )
+
+
+def test_a_row_with_no_fingerprint_is_indexed_again(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    """A catalog written before the fingerprint existed says nothing about how
+    its index was built, so the first run after the change builds it."""
+    run(documents_dir, db_path, store)
+    # What a row indexed by an older version of this code looks like: current
+    # in every other way, and silent about what made it.
+    Catalog(db_path).record_indexed(
+        MANUAL,
+        file_hash=compute_file_hash(documents_dir / MANUAL),
+        page_count=1,
+        chunk_count=1,
+    )
+
+    report = run(documents_dir, db_path, store)
+
+    assert report.updated == [MANUAL]
+    assert report.skipped == [REPORT]
+    assert Catalog(db_path).get(MANUAL).indexer == indexer_id(**CHUNKING)
 
 
 def test_files_this_library_does_not_read_are_ignored(

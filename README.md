@@ -229,8 +229,9 @@ ignores the key.
 
 The chat model can be anything that speaks the OpenAI chat completions API. The embedding
 model cannot be swapped as freely: the index is built in the vector space of one model, so
-another one needs its own index and the documents indexed again. A sync pointed at an index
-built with a different model stops and says so.
+another one needs the documents indexed again. The catalog records which model indexed each
+document, so a sync notices the change and rebuilds them; and an index whose vectors are of
+another length refuses first, because two models are not comparable even at the same length.
 
 ## Vector store
 

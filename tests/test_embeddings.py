@@ -8,7 +8,7 @@ import pytest
 from langchain_openai import OpenAIEmbeddings
 
 import app.embeddings as embeddings_module
-from app.embeddings import LOCAL_MODEL, OPENAI_MODEL, get_embeddings
+from app.embeddings import LOCAL_MODEL, OPENAI_MODEL, get_embeddings, model_name
 from tests.helpers import make_settings
 
 
@@ -78,3 +78,39 @@ def test_openai_without_a_key_names_the_variable():
 def test_an_unknown_provider_is_refused():
     with pytest.raises(RuntimeError, match="EMBEDDING_PROVIDER"):
         get_embeddings(make_settings(embedding_provider="cohere"))
+
+
+def test_a_model_named_in_the_settings_is_the_one_named():
+    settings = make_settings(embedding_model="intfloat/multilingual-e5-large")
+
+    assert model_name(settings) == "intfloat/multilingual-e5-large"
+
+
+def test_the_model_is_named_when_the_setting_is_empty():
+    """The name the catalog records is the model, not the variable that chose it.
+
+    A machine that leaves EMBEDDING_MODEL empty and one that spells the default
+    out are indexing with the same model, and a fingerprint taken from the
+    setting would call them two.
+    """
+    assert model_name(make_settings()) == LOCAL_MODEL
+    assert model_name(make_settings(embedding_provider="openai")) == OPENAI_MODEL
+
+
+def test_the_model_named_is_the_one_that_would_be_built():
+    """Both read the provider's default from the same place.
+
+    A catalog recording a name the run did not use would be worse than one
+    recording none, so this is checked on the provider whose default is not the
+    one the empty setting would fall back to.
+    """
+    local = make_settings()
+    remote = make_settings(embedding_provider="openai")
+
+    assert model_name(local) == get_embeddings(local).kwargs["model_name"]
+    assert model_name(remote) == get_embeddings(remote).model
+
+
+def test_an_unknown_provider_has_no_model_to_name():
+    with pytest.raises(RuntimeError, match="EMBEDDING_PROVIDER"):
+        model_name(make_settings(embedding_provider="cohere"))

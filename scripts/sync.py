@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from app.config import describe_vector_store, settings, short_path
+from app.embeddings import model_name
 from app.lifecycle import SyncReport, sync_documents
 from scripts.locks import single_run
 
@@ -35,6 +36,7 @@ def sync(
             documents_dir,
             db_path,
             vectorstore,
+            embedding_model=model_name(settings),
             dry_run=dry_run,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,

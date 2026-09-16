@@ -46,11 +46,13 @@ A document needs an id, a status and a history before it can be listed, categori
 managed.
 
 - [x] Catalog database (SQLite): id, path, title, description, category, file hash, status,
-      page and chunk counts, timestamps.
+      page and chunk counts, how the index was built, timestamps.
 - [x] Delete a document's vectors by metadata filter on `source`, whatever the store: the
       hosted one deletes by filter natively, the local one reaches the same rows through its
       own `where=`.
-- [x] Update as delete + re-add, triggered by comparing the file hash.
+- [x] Update as delete + re-add, triggered by comparing the file hash and by comparing what
+      built the index: another reader, another chunk size or another embedding model rebuilds
+      a document whose file has not changed and whose vectors say nothing about their making.
 - [x] A `sync` command that reconciles filesystem, catalog and index: add, update, delete.
 - [x] Delete a document from the index and the catalog, as a command of its own: the sync
       only trashes, and the trash is emptied on request. The file is a separate, opt-in

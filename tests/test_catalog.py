@@ -13,6 +13,116 @@ from app.catalog import (
     normalise_category,
 )
 
+# The documents table as a version of this file that kept no fingerprint wrote
+# it. Written out here rather than read from the module's own SCHEMA: the test
+# is about a database whose columns are the older ones, and taking the columns
+# from the code under test would make it agree with whatever that code says.
+_OLD_SCHEMA = """
+CREATE TABLE documents (
+    id            INTEGER PRIMARY KEY,
+    path          TEXT NOT NULL UNIQUE,
+    title         TEXT NOT NULL,
+    description   TEXT,
+    category      TEXT,
+    file_hash     TEXT,
+    status        TEXT NOT NULL DEFAULT 'queued',
+    page_count    INTEGER,
+    chunk_count   INTEGER,
+    error_message TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    trashed_at    TEXT
+) STRICT;
+"""
+
+
+def old_catalog(db_path: Path) -> Path:
+    """A library indexed by an older version: one row, and no fingerprint."""
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(_OLD_SCHEMA)
+        conn.execute(
+            "INSERT INTO documents (path, title, status, file_hash, chunk_count) "
+            "VALUES ('a.pdf', 'a', 'indexed', 'abc', 7)"
+        )
+
+    return db_path
+
+
+def columns_of(db_path: Path) -> set[str]:
+    with sqlite3.connect(db_path) as conn:
+        return {row[1] for row in conn.execute("PRAGMA table_info(documents)")}
+
+
+def test_an_older_catalog_still_reads(tmp_path: Path) -> None:
+    """A library indexed before the fingerprint existed opens and is read.
+
+    `CREATE TABLE IF NOT EXISTS` leaves the table it finds exactly as it was, so
+    the columns added since are not there to be selected. The row has to come
+    back with them absent — which is also the useful answer: a document with no
+    fingerprint is one the next sync indexes again.
+    """
+    record = Catalog(old_catalog(tmp_path / "old.sqlite3")).get("a.pdf")
+
+    assert (record.status, record.file_hash, record.chunk_count) == (
+        "indexed",
+        "abc",
+        7,
+    )
+    assert (record.indexer, record.embedding_model) == (None, None)
+
+
+def test_an_older_catalog_is_given_the_columns_it_lacks(tmp_path: Path) -> None:
+    """The migration adds, and changes nothing that was already there."""
+    db_path = old_catalog(tmp_path / "old.sqlite3")
+
+    Catalog(db_path).set_status("a.pdf", "queued")
+
+    assert {"indexer", "embedding_model"} <= columns_of(db_path)
+    assert Catalog(db_path).get("a.pdf").file_hash == "abc"
+
+
+def test_a_catalog_opened_to_read_is_left_alone(tmp_path: Path) -> None:
+    """`create=False` promises to write nothing, and a migration is a write.
+
+    A dry run opens the catalog this way, and it is the run most likely to meet
+    a library that has not been migrated yet.
+    """
+    db_path = old_catalog(tmp_path / "old.sqlite3")
+
+    assert [record.path for record in Catalog(db_path, create=False).all()] == [
+        "a.pdf"
+    ]
+
+    assert "indexer" not in columns_of(db_path)
+
+
+def test_record_indexed_stores_what_built_the_index(catalog: Catalog) -> None:
+    """The one record of how the vectors were made: nothing else carries it."""
+    catalog.add_file("a.pdf", "a")
+
+    catalog.record_indexed(
+        "a.pdf",
+        file_hash="abc",
+        page_count=3,
+        chunk_count=7,
+        indexer="pymupdf-1|1200/150",
+        embedding_model="BAAI/bge-m3",
+    )
+
+    record = catalog.get("a.pdf")
+    assert record.indexer == "pymupdf-1|1200/150"
+    assert record.embedding_model == "BAAI/bge-m3"
+
+
+def test_a_row_indexed_without_a_fingerprint_has_none(catalog: Catalog) -> None:
+    """Absent is the honest record for the callers that have no run behind them."""
+    catalog.add_file("a.pdf", "a")
+
+    catalog.record_indexed("a.pdf", file_hash="abc", page_count=1, chunk_count=1)
+
+    record = catalog.get("a.pdf")
+    assert (record.indexer, record.embedding_model) == (None, None)
+
 
 def test_opening_twice_keeps_the_schema(tmp_path: Path) -> None:
     db_path = tmp_path / "catalog.sqlite3"

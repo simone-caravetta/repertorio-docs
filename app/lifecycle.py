@@ -6,8 +6,13 @@ from pathlib import Path
 
 from langchain_core.vectorstores import VectorStore
 
-from app.catalog import Catalog, category_from_path
-from app.ingestion import SUPPORTED_EXTENSIONS, compute_file_hash, ingest_one
+from app.catalog import Catalog, DocumentRecord, category_from_path
+from app.ingestion import (
+    SUPPORTED_EXTENSIONS,
+    compute_file_hash,
+    indexer_id,
+    ingest_one,
+)
 
 # A row in one of these states is not the result of a completed run: either the
 # run that created it never finished, or it failed. Both are retried.
@@ -53,11 +58,24 @@ def delete_document_vectors(source: str, vectorstore: VectorStore) -> None:
     vectorstore.delete(filter={"source": source})
 
 
+def _indexed_as_this_run_would(
+    record: DocumentRecord, *, indexer: str, embedding_model: str
+) -> bool:
+    """Whether the vectors on record were built the way this run would build them.
+
+    A row with no fingerprint was indexed before the catalog kept one, and the
+    answer is no: the reading it was made with is not known, and the only way to
+    know it is current is to make it again.
+    """
+    return record.indexer == indexer and record.embedding_model == embedding_model
+
+
 def sync_documents(
     documents_dir: Path,
     db_path: Path,
     vectorstore: VectorStore | None,
     *,
+    embedding_model: str,
     dry_run: bool = False,
     chunk_size: int = 900,
     chunk_overlap: int = 150,
@@ -69,6 +87,16 @@ def sync_documents(
     write the new ones, then record the outcome. Every step that is interrupted
     leaves a state the next run recognises and repairs: a row with no hash, or
     with a status no completed run leaves behind, is simply processed again.
+
+    A document is also made again when what built its index is not what this run
+    would build it with: another reading, another chunk size, another model. The
+    file has not changed and the vectors do not say, so the fingerprint on the
+    row is the only thing that can tell, and without it a library that moved to
+    a new model would go on answering from the old one's vectors.
+
+    `embedding_model` is required for the same reason: a run that does not know
+    which model it is using cannot record one, and a run that records none makes
+    every document stale for the run after it.
 
     With `dry_run` nothing is written anywhere: no directory is created, no
     catalog, no vector store. The returned report describes what a real run
@@ -83,6 +111,10 @@ def sync_documents(
 
     catalog = Catalog(db_path, create=not dry_run)
     report = SyncReport()
+
+    # What this run marks a document it indexes with, read back off the row on
+    # the next run to see whether the vectors were made by the code in hand.
+    indexer = indexer_id(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
     files = {
         str(path.relative_to(documents_dir)): path
@@ -102,9 +134,14 @@ def sync_documents(
         elif (
             record.status in REPROCESS_STATUSES
             or compute_file_hash(files[source]) != record.file_hash
+            or not _indexed_as_this_run_would(
+                record, indexer=indexer, embedding_model=embedding_model
+            )
         ):
             # The second test reads the file, so it is only reached for a row a
             # completed run left behind. A row without a hash always differs.
+            # The third is what a changed reader, chunk size or model comes to,
+            # and it is the only one that looks at nothing but the row.
             report.updated.append(source)
         else:
             report.skipped.append(source)
@@ -147,6 +184,8 @@ def sync_documents(
             file_hash=result.file_hash,
             page_count=result.page_count,
             chunk_count=result.chunk_count,
+            indexer=indexer,
+            embedding_model=embedding_model,
         )
 
     for source in report.added:

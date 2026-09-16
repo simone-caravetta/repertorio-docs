@@ -12,7 +12,7 @@ from app.lifecycle import (
     sync_documents,
     trashed_paths,
 )
-from tests.helpers import SENTENCE, FakeVectorStore, make_pdf
+from tests.helpers import EMBEDDING_MODEL, SENTENCE, FakeVectorStore, make_pdf
 
 MANUAL = "manuals/manual.pdf"
 REPORT = "reports/report.pdf"
@@ -23,7 +23,9 @@ CHUNKING = {"chunk_size": 200, "chunk_overlap": 20}
 def index(
     documents_dir: Path, db_path: Path, store: FakeVectorStore
 ) -> SyncReport:
-    return sync_documents(documents_dir, db_path, store, **CHUNKING)
+    return sync_documents(
+        documents_dir, db_path, store, embedding_model=EMBEDDING_MODEL, **CHUNKING
+    )
 
 
 def delete(
