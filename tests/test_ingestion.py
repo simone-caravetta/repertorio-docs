@@ -3,16 +3,34 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
 from langchain_core.documents import Document
 
+from app import pdf
 from app.ingestion import (
     _stable_id,
+    chunk_document,
     compute_file_hash,
     ingest_one,
     load_pdf,
-    split_documents,
 )
-from tests.helpers import FakeVectorStore, make_pdf
+from tests.helpers import (
+    BODY,
+    FakeVectorStore,
+    Line,
+    Table,
+    make_pdf,
+    make_structured_pdf,
+)
+
+
+def chunks_of(path: Path, *, chunk_size: int, chunk_overlap: int = 0) -> list[Document]:
+    return chunk_document(
+        pdf.read(path),
+        source="a.pdf",
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
 
 
 def test_compute_file_hash_hashes_the_bytes(tmp_path: Path) -> None:
@@ -53,7 +71,7 @@ def test_stable_id_separates_chunks_that_read_the_same() -> None:
     def document(position: int) -> Document:
         return Document(
             page_content="the same text, twice on the page",
-            metadata={"source": "a.pdf", "page": 0, "chunk_id": position},
+            metadata={"source": "a.pdf", "page": 0, "start": position},
         )
 
     assert _stable_id(document(1)) != _stable_id(document(2))
@@ -70,10 +88,40 @@ def test_load_pdf_names_pages_after_the_documents_folder(
     assert pages[0].page_content
 
 
-def test_split_documents_marks_the_chunks() -> None:
-    pages = [Document(page_content="word " * 200, metadata={"source": "a.pdf"})]
+# A table wide enough to be read as one, and long enough that a chunk size well
+# under it would cut it in several if it were offered to the splitter at all.
+TABLE_ROWS = [
+    ["Parte", "Ore", "Nota"],
+    ["Filtro", "200", "pulire"],
+    ["Olio", "1000", "sostituire"],
+    ["Candele", "500", "controllare"],
+    ["Freni", "800", "sostituire"],
+    ["Gomme", "400", "gonfiare"],
+]
 
-    chunks = split_documents(pages, chunk_size=100, chunk_overlap=20)
+
+@pytest.fixture
+def manual(tmp_path: Path) -> Path:
+    """Two sections of prose and a table, with one section's body long enough to
+    be cut into more than one chunk."""
+    return make_structured_pdf(
+        tmp_path / "manual.pdf",
+        pages=[
+            [
+                Line("Prima sezione", size=15),
+                Line(BODY),
+                Line(BODY),
+                Line("Seconda sezione", size=15),
+                Line(BODY),
+                Line(BODY),
+                Table(TABLE_ROWS),
+            ]
+        ],
+    )
+
+
+def test_the_chunks_are_marked_with_what_they_are(manual: Path) -> None:
+    chunks = chunks_of(manual, chunk_size=120)
 
     assert len(chunks) > 1
     assert [chunk.metadata["chunk_id"] for chunk in chunks] == list(
@@ -81,6 +129,56 @@ def test_split_documents_marks_the_chunks() -> None:
     )
     assert {chunk.metadata["document_type"] for chunk in chunks} == {"pdf"}
     assert {chunk.metadata["source"] for chunk in chunks} == {"a.pdf"}
+
+
+def test_a_chunk_is_the_text_of_the_page_it_says_it_is(manual: Path) -> None:
+    """The offsets are what a citation is drawn from, so they have to index the
+    page's own text — the same text the endpoint reads back."""
+    pages = pdf.read_pages(manual)
+
+    for chunk in chunks_of(manual, chunk_size=120):
+        start, end = chunk.metadata["start"], chunk.metadata["end"]
+        page = pages[chunk.metadata["page"]]
+
+        assert page.text[start:end] == chunk.page_content
+
+
+def test_a_chunk_does_not_cross_a_heading(manual: Path) -> None:
+    """Every chunk belongs to one section, and says which one.
+
+    The body of the first section is long enough for the splitter to make more
+    than one chunk of it, so a cut that crossed the heading would show up here as
+    a chunk carrying both names.
+    """
+    chunks = chunks_of(manual, chunk_size=120)
+
+    sections = {chunk.metadata.get("section") for chunk in chunks}
+    assert sections == {"Prima sezione", "Seconda sezione"}
+
+    for chunk in chunks:
+        names = [
+            name
+            for name in ("Prima sezione", "Seconda sezione")
+            if name in chunk.page_content
+        ]
+        assert names in ([], [chunk.metadata["section"]])
+
+
+def test_a_table_is_one_chunk(manual: Path) -> None:
+    """However large it is: a grid read in halves is read as prose."""
+    tables = [
+        chunk
+        for chunk in chunks_of(manual, chunk_size=60)
+        if chunk.metadata.get("table")
+    ]
+
+    assert len(tables) == 1
+    assert tables[0].page_content.split() == [
+        cell for row in TABLE_ROWS for cell in row
+    ]
+    # Larger than the size a chunk is cut to, so a table offered to the splitter
+    # like everything else would have come back in several pieces.
+    assert len(tables[0].page_content) > 60
 
 
 def test_ingest_one_indexes_the_file(

@@ -17,7 +17,12 @@ langgraph-checkpoint-sqlite>=3.0,<4.0
 pinecone>=7.0,<8.0
 sentence-transformers>=5.0,<6.0
 torch>=2.0
-pypdf>=5.0,<7.0
+# The reader. PyMuPDF gives a page's text together with the rectangle each run of
+# it covers, and can tell a heading from a body line and a table from a
+# paragraph — none of which a line-based reader can say. It is the only thing
+# that reads a PDF here: pypdf and langchain-community were what `PyPDFLoader`
+# needed, and there is no loader any more.
+pymupdf>=1.26,<2.0
 python-dotenv>=1.0,<2.0
 
 # The web interface: the app and the server that runs it. The stream is written

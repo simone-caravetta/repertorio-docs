@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import pymupdf
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
@@ -21,6 +22,15 @@ from app.config import Settings
 # A line long enough to produce a chunk, short enough to stay well under the
 # default chunk size.
 SENTENCE = "The manual of the thing explains how the thing works. "
+
+# A line of prose for a document built with real typography: short enough to fit
+# across the page at the size it is set in, which a PDF lays down in one run.
+BODY = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod."
+
+# What the tests index with. Any name does — a run is compared against itself —
+# and it is written down rather than looked up because a test that needed a real
+# model would be a test that downloaded one.
+EMBEDDING_MODEL = "test-model"
 
 
 def make_settings(**overrides: object) -> Settings:
@@ -76,8 +86,9 @@ def make_pdf(path: Path, text: str) -> Path:
 
     An empty string produces a page with no text at all, which is what a scanned
     document looks like to the text extractor. The file is assembled by hand —
-    no extra dependency, no committed binary — so the cross-reference table has
-    to be built with the exact byte offsets pypdf expects.
+    no committed binary, and no PyMuPDF, which the tests that need real
+    typography use instead — so the cross-reference table has to be built with
+    the exact byte offsets a reader looks for.
 
     Text is written with the Latin-1 encoding: keep it ASCII.
     """
@@ -120,6 +131,95 @@ def make_pdf(path: Path, text: str) -> Path:
 
     path.write_bytes(b"".join(body + xref + [trailer]))
     return path
+
+
+@dataclass(frozen=True)
+class Line:
+    """A line of a built PDF: what it says, and the size it is set in."""
+
+    text: str
+    size: float = 11.0
+    # Set only to put a line somewhere the stacking would not: a heading inside
+    # a table's grid, which is a case the reader has to get right.
+    y: float | None = None
+
+
+@dataclass(frozen=True)
+class Table:
+    """A ruled grid of cells, drawn as what it is rather than as lines of text."""
+
+    rows: list[list[str]]
+
+
+def make_structured_pdf(
+    path: Path,
+    pages: list[list[Line | Table]],
+    toc: list[list[Any]] | None = None,
+) -> Path:
+    """Write a PDF with real typography — sizes, a ruled table, an index.
+
+    `make_pdf` above is enough for a document that is one flat run of text, which
+    is what most of the suite needs. Reading structure needs a document that has
+    some, and the three that matter here — letters at more than one size, a grid
+    of cells, a declared table of contents — cannot be hand-written without
+    embedding a font program. So this one is built with PyMuPDF, which the
+    project depends on anyway.
+
+    Each page is a list of items laid down the page in order, and each item is a
+    `Line` at the size it is set in or a `Table`. `toc` is what the document
+    declares about itself, in PyMuPDF's own shape: a list of
+    `[level, title, page]`, the page counted from one as a reader counts it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    document = pymupdf.open()
+
+    for items in pages:
+        page = document.new_page()
+        cursor = 80.0
+
+        for item in items:
+            if isinstance(item, Table):
+                _draw_table(page, item.rows, y=cursor)
+                cursor += _TABLE_ROW * len(item.rows) + 20
+                continue
+
+            y = cursor if item.y is None else item.y
+            page.insert_text((72, y), item.text, fontsize=item.size)
+            if item.y is None:
+                cursor += item.size * 1.8
+
+    if toc:
+        document.set_toc(toc)
+
+    document.save(path)
+    document.close()
+    return path
+
+
+# The height of one row of a built table, and the width of one of its columns.
+_TABLE_ROW = 22.0
+_TABLE_COLUMN = 120.0
+
+
+def _draw_table(page: pymupdf.Page, rows: list[list[str]], *, y: float) -> None:
+    """A grid of rules with the cells written in it, sized to what it holds."""
+    columns = max(len(row) for row in rows)
+    width = _TABLE_COLUMN * columns
+    height = _TABLE_ROW * len(rows)
+
+    for row in range(len(rows) + 1):
+        page.draw_line((72, y + row * _TABLE_ROW), (72 + width, y + row * _TABLE_ROW))
+    for column in range(columns + 1):
+        page.draw_line((72 + column * _TABLE_COLUMN, y), (72 + column * _TABLE_COLUMN, y + height))
+
+    for row, cells in enumerate(rows):
+        for column, text in enumerate(cells):
+            page.insert_text(
+                (76 + column * _TABLE_COLUMN, y + row * _TABLE_ROW + 15),
+                text,
+                fontsize=11,
+            )
 
 
 class FakeChatModel(BaseChatModel):
