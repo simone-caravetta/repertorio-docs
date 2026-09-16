@@ -344,13 +344,15 @@ every question asked, so there was nothing to reorder: the eval reported 11/11 d
 pages and MRR 1.00 with `RERANK=on` and with `RERANK=off` alike. A search that is never wrong
 cannot show an improvement, so a second corpus was built to measure against — ten subjects with
 four near-identical documents each, differing in one condition the document states, and
-questions that describe that condition in everyday words. On it the reranker reorders and it
-helps: MRR 0.78 → 0.89 and nDCG@10 0.77 → 0.85, with 17 of the 50 questions landing at a
-different rank. Five runs of the plain pass and three of the reranked one each came out
-identical line for line, so the corpus moves for a reason and not from ties. It is not a free
-win, and the two directions tell the story: two documents the
-plain search had found dropped out of the top five while three it had missed came in, so the
-hit rate barely moves — 47/50 against 48/50 — while the ranking improves. A reordering cannot
+questions that describe that condition in everyday words. Forty more were added later, each
+citing a document by an opaque reference number and asking what it says: they were written for
+hybrid search, and they are kept because what they measured was not what was expected of them.
+On that corpus the reranker reorders and it helps: MRR 0.82 → 0.94 and nDCG@10 0.83 → 0.91,
+with 19 of the 90 questions landing at a different rank. Five runs of the plain pass and three
+of the reranked one each came out identical line for line, so the corpus moves for a reason and
+not from ties. It is not a free win, and the two directions tell the story: two documents the
+plain search had found dropped out of the top five while four it had missed came in, so the
+hit rate barely moves — 86/90 against 88/90 — while the ranking improves. A reordering cannot
 add what was never retrieved. What it costs is not nothing: about seven seconds per question on a
 CPU, with six cores busy, and a two-gigabyte checkpoint on a clone that has never reranked.
 Turn it on when a question set shows the search losing an answer it should have found — that is

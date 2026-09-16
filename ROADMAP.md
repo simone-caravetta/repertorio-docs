@@ -288,14 +288,17 @@ doubles as the tool that tells whether a local model is good enough for a given 
       differing only in a condition stated in the text, and questions that describe that
       condition in everyday words rather than in the document's own. It is a local instrument
       like the real set, not part of the repository, and it is what made the reranker
-      measurable at all. The baseline over it is 47/50 documents, 47/50 pages, MRR 0.78,
-      nDCG@10 0.77, identical over five runs and with 16 of the 50 questions off rank 1 — a
+      measurable at all. The baseline over it is 86/90 documents, 86/90 pages, MRR 0.82,
+      nDCG@10 0.83, identical over five runs and with 24 of the 90 questions off rank 1 — a
       baseline a retrieval change can be measured against, which the real library cannot give.
       Its difficulty is concentrated rather than spread, and that is worth knowing before
-      trusting it as a general instrument: all eight documents stating the closed-garage
-      condition land off rank 1, while the other three conditions together miss 7 of 28.
-      Extending it means finding a second condition this model separates as badly, and the
-      margins between a document and its three siblings are where to look for one.
+      trusting it as a general instrument: of the forty questions that describe a condition,
+      every one of the eight about the closed-garage condition is off rank 1, while the other
+      thirty-two are off eight times between them. Extending it means finding a second
+      condition this model separates as badly, and the margins between a document and its
+      three siblings are where to look for one. A third family was added for hybrid search —
+      forty questions citing an opaque practice number the document states in its heading —
+      and it did not behave as the item below expected: see there.
 - [ ] Tracing (Langfuse) to inspect prompts, tokens and latency per node.
 - [x] Reranking with `bge-reranker-v2-m3` after retrieval — no index change required. The
       search is asked for `RERANK_CANDIDATES` (20) passages, a cross-encoder scores each
@@ -319,7 +322,18 @@ doubles as the tool that tells whether a local model is good enough for a given 
       plus a 2 GB checkpoint on a fresh clone. `RERANK=on` is one variable, and
       `python -m scripts.eval` and `scripts.chat` both print which pass they ran.
 - [ ] Hybrid search using the sparse weights BGE-M3 already produces, for codes, names and
-      numbers where dense retrieval is weak.
+      numbers where dense retrieval is weak. **The premise was measured on the corpus above
+      and is only half true, which is the finding.** Forty questions were added, each citing
+      an opaque practice number — `PR-66C0-908F`, a string that means nothing — and asking
+      what that document says, on the reasoning that an embedding has no meaning to match
+      against in such a string. Dense finds the document anyway: 32 of the 40 at rank 1,
+      winning by 0.015 to 0.11 in cosine distance, so this model's dense representation
+      carries the identity of a rare token and a code is not the blind spot the note assumed
+      it was. What is left is the other eight, where the right document loses by 0.005 to
+      0.032 — a near-tie rather than a miss, and only one of them falls outside the console's
+      five. So the case for the sparse half rests on the ordering of a fifth of one family
+      rather than on blindness: worth building against a real sparse arm to see what it does,
+      not worth assuming, and no longer expected to be the largest number in the table.
 - [ ] Relevance grading node with a conditional edge: rewrite the query and retry, or state
       that the answer is not in the documents. Seen while building the interface, and the
       reason this node is not optional: a question with no content of its own ("ciao")
