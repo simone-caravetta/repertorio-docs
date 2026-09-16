@@ -20,6 +20,11 @@ data/catalog*.sqlite3.lock
 # codice, e si ricostruisce con un sync.
 data/chroma/
 
+# Le domande di valutazione sono scritte sui documenti e citano cosa contengono:
+# private quanto i documenti da cui vengono. La suite di test se ne costruisce
+# uno suo, sui PDF di prova, e non ha bisogno di questo file.
+data/evals/
+
 # Le conversazioni contengono le domande e le risposte: private quanto i
 # documenti che citano.
 data/conversations*.sqlite3*

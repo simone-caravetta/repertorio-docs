@@ -62,6 +62,7 @@ def make_settings(**overrides: object) -> Settings:
         "conversations_db_path": Path(
             "/tmp/repertorio-docs-test/conversations.sqlite3"
         ),
+        "eval_questions_path": Path("/tmp/repertorio-docs-test/questions.json"),
         # A scope is resolved against these two, so a test that pins neither
         # would decide differently on a machine with a different `.env`.
         "chunk_size": 200,

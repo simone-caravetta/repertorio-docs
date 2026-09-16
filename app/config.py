@@ -97,6 +97,12 @@ class Settings:
     conversations_db_path: Path = PROJECT_ROOT / os.getenv(
         "CONVERSATIONS_DB_PATH", "data/conversations.sqlite3"
     )
+    # The questions a run of the eval harness is measured against. Written about
+    # the documents and quoting what they hold, so it is kept beside them rather
+    # than in the repository: see `data/evals/` in `.gitignore`.
+    eval_questions_path: Path = PROJECT_ROOT / os.getenv(
+        "EVAL_QUESTIONS", "data/evals/questions.json"
+    )
 
 
 settings = Settings()

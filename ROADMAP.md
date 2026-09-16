@@ -263,8 +263,15 @@ about them.
 Start with the harness: without a measurement, the rest of this phase is guesswork. It
 doubles as the tool that tells whether a local model is good enough for a given node.
 
-- [ ] Eval harness: questions with their expected source, measuring retrieval hit-rate and
-      answer faithfulness.
+- [x] Eval harness: questions with their expected source, measuring retrieval hit-rate and
+      answer faithfulness. `python -m scripts.eval` reads a JSON set — the document each answer
+      should come from, and optionally the page and what a correct answer says — and measures
+      the search from the question as typed, through the console's own retriever: no model call,
+      and the numbers are document hit-rate, page hit-rate and mean reciprocal rank. `--answers`
+      writes an answer to each question from the passages the search returned, using the
+      console's own prompt, and checks it against the text the set expected; `--judge` adds a
+      model that reads each answer against its context for the faithfulness number. The set is
+      a file of private questions about private documents, so it lives in `data/evals/`.
 - [ ] Tracing (Langfuse) to inspect prompts, tokens and latency per node.
 - [ ] Reranking with `bge-reranker-v2-m3` after retrieval — no index change required.
 - [ ] Hybrid search using the sparse weights BGE-M3 already produces, for codes, names and

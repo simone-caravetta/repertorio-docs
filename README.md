@@ -265,6 +265,42 @@ One limit worth knowing: the sync and the delete command take a lock, the consol
 server do not. With a hosted index that does not matter, but with a local store any two of
 them would be writing the same folder at the same time.
 
+## Measuring retrieval
+
+Changing how documents are searched needs a number to move. A question set is a JSON file
+naming, for each question, the document the answer should come from and — when it is worth
+writing down — the page and what a correct answer says:
+
+```json
+[
+  {
+    "id": "manuals-warranty",
+    "question": "How long does the warranty last?",
+    "document": "manuals/a.pdf",
+    "page": 4,
+    "contains": ["24 months"]
+  }
+]
+```
+
+```bash
+python -m scripts.eval                            # search only: one embedding per question
+python -m scripts.eval --document manuals/a.pdf   # the same set, asked of one document
+python -m scripts.eval --answers                  # write an answer to each question
+python -m scripts.eval --judge                    # ... and check each one against its sources
+```
+
+The search is measured from the question as typed, through the same retriever the console uses,
+and reports how often the expected document came back, how often the expected page did, and the
+mean reciprocal rank. It costs no model call. `--answers` writes an answer from the passages
+that search returned, with the console's own prompt, so a question the search missed cannot be
+rescued by a good answer — it was one search, and what it found is what the answer was written
+from. `--judge` adds a second call per question, to a model that reads the answer against its
+context and says whether every claim in it is supported, which is the faithfulness number.
+
+The set is a file of your own questions about your own documents: the default path is
+`data/evals/questions.json`, kept out of the repository for the same reason the documents are.
+
 ## Development
 
 ```bash
