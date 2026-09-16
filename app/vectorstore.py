@@ -7,10 +7,11 @@ from typing import Any
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
-from langchain_core.vectorstores import VectorStore, VectorStoreRetriever
+from langchain_core.vectorstores import VectorStore
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
 
+from app import rerank
 from app.config import settings, validate_api_keys
 from app.embeddings import get_embeddings
 from app.ingestion import whole_number
@@ -143,7 +144,7 @@ def build_retriever(
     *,
     k: int | None = None,
     sources: Sequence[str] | None = None,
-) -> VectorStoreRetriever:
+) -> BaseRetriever:
     """A retriever over the configured store, optionally narrowed to documents.
 
     `sources=None` searches the whole library, which is what every command did
@@ -155,19 +156,35 @@ def build_retriever(
     for deletion, and the same caution applies to searching — so one shape, tested
     on both, beats a passthrough that nothing checks.
 
+    `k` is what comes back, which is not always what the store is asked for: with
+    reranking on, the search is asked for `rerank_candidates` and the reranker
+    keeps `k` of them. A caller that wants more than the candidate pool gets what
+    it asked for, since a search cannot rerank what it was never handed.
+
     Not cached, unlike `get_retriever`: the arguments are the cache key, and the
     store underneath is already cached, so a retriever costs nothing worth
     keeping.
     """
+    wanted = settings.retrieval_k if k is None else k
+    reranked = rerank.enabled(settings)
+
     search_kwargs: dict[str, Any] = {
-        "k": settings.retrieval_k if k is None else k
+        "k": max(settings.rerank_candidates, wanted) if reranked else wanted
     }
     if sources is not None:
         search_kwargs["filter"] = {"source": {"$in": list(sources)}}
 
-    return get_vectorstore().as_retriever(
+    found = get_vectorstore().as_retriever(
         search_type="similarity",
         search_kwargs=search_kwargs,
+    )
+    if not reranked:
+        return found
+
+    return rerank.RerankedRetriever(
+        retriever=found,
+        reranker=rerank.get_reranker(settings),
+        k=wanted,
     )
 
 
@@ -213,6 +230,6 @@ def _position(chunk: Document) -> tuple[int, int]:
 
 
 @lru_cache(maxsize=1)
-def get_retriever() -> VectorStoreRetriever:
+def get_retriever() -> BaseRetriever:
     """The retriever the graph falls back on: the whole library, top k."""
     return build_retriever()

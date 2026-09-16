@@ -301,6 +301,37 @@ context and says whether every claim in it is supported, which is the faithfulne
 The set is a file of your own questions about your own documents: the default path is
 `data/evals/questions.json`, kept out of the repository for the same reason the documents are.
 
+## Reranking
+
+An embedding is computed before the question is known, so the best a similarity search can say
+is that two texts sit near each other. A cross-encoder reads the question and the passage
+together and scores that pair, which is the thing an embedding cannot do. It is one forward
+pass per passage, so it is affordable over the twenty a search hands over and not over a
+library.
+
+```text
+RERANK=off                   # off (the default) or on
+RERANK_MODEL=                # empty means BAAI/bge-reranker-v2-m3
+RERANK_CANDIDATES=20         # what the search is asked for, of which RETRIEVAL_K come back
+RERANK_DEVICE=               # empty follows EMBEDDING_DEVICE
+```
+
+The search is asked for `RERANK_CANDIDATES` passages, all of them are scored, and the best
+`RETRIEVAL_K` are what the answer is written from. `python -m scripts.eval` and `python -m
+scripts.chat` both print a `rerank` line saying which model and how many of how many, or `off`,
+because a reranked run and a plain one are handed a different question by the store and their
+reports are not comparable unless the line says which pass produced them. A scope that is one
+small document is read whole and never reranked — the reason it is read whole is to reach
+passages no ranking would surface.
+
+It is off by default because it was measured and it bought nothing. On the library this was
+built against the search already put the right page first for every question asked, so
+reranking reordered nothing: the eval reported 11/11 documents, 11/11 pages and MRR 1.00 with
+`RERANK=on` and with `RERANK=off` alike. What it costs is not nothing: about seven seconds per
+question on a CPU, with six cores busy, and a two-gigabyte checkpoint on a clone that has never
+reranked. Turn it on when a question set shows the search losing an answer it should have
+found — that is the case it is for.
+
 ## Development
 
 ```bash

@@ -59,6 +59,31 @@ class Settings:
     chunk_size: int = int(os.getenv("CHUNK_SIZE", "900"))
     chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", "150"))
     retrieval_k: int = int(os.getenv("RETRIEVAL_K", "5"))
+
+    # Reranking: what the search hands over is scored again by a model that reads
+    # the question and the passage together — which is the one thing an embedding
+    # cannot do — and the best `retrieval_k` of them are what the answer is written
+    # from. So the search is asked for `rerank_candidates` and `retrieval_k` is what
+    # comes back. Off means off: with `RERANK=off` no model is built at all. See
+    # `app/rerank.py`.
+    #
+    # Off by default, and that is a measurement rather than a caution. Measured on
+    # the library this was built against — a hundred-page book and a one-page CV —
+    # the search already puts the right page first for every question there is,
+    # so reranking reorders nothing: 11/11 documents, 11/11 pages and MRR 1.00
+    # with it on and with it off. What it costs is real: about seven seconds a
+    # question on a CPU, six cores busy, and a checkpoint of two gigabytes on a
+    # clone that has never reranked. A default should not buy that for nothing.
+    # One variable turns it on, `rerank` is printed at the top of every run so a
+    # report says which pass produced it, and what would settle the question is a
+    # question set with headroom — questions this library gets wrong.
+    rerank: str = os.getenv("RERANK", "off")
+    rerank_model: str = os.getenv("RERANK_MODEL", "")
+    rerank_candidates: int = int(os.getenv("RERANK_CANDIDATES", "20"))
+    # The device the local models run on, unless the reranker is told otherwise:
+    # both are the same kind of model and one machine has one answer to this.
+    rerank_device: str = os.getenv("RERANK_DEVICE", "") or embedding_device
+
     # A scope that is one document is read whole rather than by top-k, when its
     # text is estimated to fit in this many characters: every chunk is handed to
     # the model and nothing is dropped by similarity. Set it to 0 to always

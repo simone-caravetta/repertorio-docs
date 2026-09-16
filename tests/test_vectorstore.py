@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from langchain_core.documents import Document
 
+import app.rerank as rerank_module
 import app.vectorstore as vectorstore_module
 from app.vectorstore import WholeDocumentRetriever, ensure_index
 from tests.helpers import FakeVectorStore, as_a_store_returns, make_settings
@@ -50,16 +51,19 @@ class FakePinecone:
 
 @pytest.fixture(autouse=True)
 def clean_caches():
-    """The dimension and the store are cached per process; tests need them fresh.
+    """The dimension, the store, the retriever and the model are cached per
+    process; tests need them fresh.
 
     `get_vectorstore` especially: a test that builds one would otherwise leave it
     cached for the next, which would then be asserting about a store it did not
-    ask for.
+    ask for. `get_reranker` is a cache of the same kind, and a stale one would
+    keep a test on a model the case after it turned off.
     """
     for cached in (
         vectorstore_module.get_embedding_dimension,
         vectorstore_module.get_vectorstore,
         vectorstore_module.get_retriever,
+        rerank_module.get_reranker,
     ):
         cached.cache_clear()
     yield
@@ -67,6 +71,7 @@ def clean_caches():
         vectorstore_module.get_embedding_dimension,
         vectorstore_module.get_vectorstore,
         vectorstore_module.get_retriever,
+        rerank_module.get_reranker,
     ):
         cached.cache_clear()
 

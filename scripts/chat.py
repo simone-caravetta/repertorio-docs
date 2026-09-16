@@ -14,6 +14,7 @@ from app.rag_graph import (
     thread_config,
     unique_sources,
 )
+from app.rerank import describe_rerank
 from app.scope import build_scoped_retriever, resolve_scope
 
 
@@ -64,6 +65,7 @@ async def run_chat(
     print(f"store: {describe_vector_store(settings)}")
     print(f"catalog: {short_path(db_path)}")
     print(f"scope: {scope.label}")
+    print(f"rerank: {describe_rerank(settings)}")
     print("Type 'exit' to quit.\n")
 
     while True:

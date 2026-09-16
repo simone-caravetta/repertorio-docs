@@ -17,10 +17,19 @@ from pathlib import Path
 
 import pytest
 
+import app.rerank as rerank_module
+from app.config import Settings
 from app.evals import EvalReport, Question, QuestionResult
 from app.lifecycle import sync_documents
 from scripts.eval import evaluate, main, parse_args, print_report
-from tests.helpers import EMBEDDING_MODEL, SENTENCE, FakeChatModel, FakeVectorStore
+from tests.helpers import (
+    EMBEDDING_MODEL,
+    SENTENCE,
+    FakeChatModel,
+    FakeReranker,
+    FakeVectorStore,
+    make_settings,
+)
 
 MANUAL = "manuals/manual.pdf"
 REPORT = "reports/report.pdf"
@@ -48,6 +57,12 @@ def library(
     A run reaches its vectors by building a store, the way a shell does, so the
     only way to measure a library without Pinecone is to answer that build with a
     fake — and the search the command runs is then the real retriever over it.
+
+    The reranker is answered the same way, and for a second reason: this run does
+    not replace the settings, so what `build_retriever` reads here is the
+    machine's own `.env`, and a clone that has never reranked would download two
+    gigabytes to run a test about a report. The double keeps the order the search
+    found, which leaves the ranks these tests assert on the search's own.
     """
     store = FakeVectorStore()
     sync_documents(
@@ -58,6 +73,7 @@ def library(
         **CHUNKING,  # type: ignore[arg-type]
     )
     monkeypatch.setattr("app.vectorstore.get_vectorstore", lambda: store)
+    monkeypatch.setattr(rerank_module, "get_reranker", lambda config: FakeReranker())
 
     return store
 
@@ -194,6 +210,64 @@ def test_a_question_the_scope_does_not_cover_is_not_asked(
 
     assert [result.asked for result in report.results] == [False, True]
     assert "not in scope" in capsys.readouterr().out
+
+
+@pytest.fixture
+def configured(monkeypatch: pytest.MonkeyPatch) -> Callable[..., Settings]:
+    """Point a run at settings a test can predict.
+
+    Two patches of one object, because the name was resolved in two places:
+    `scripts.eval` imported it, and `build_retriever` reads `app.vectorstore`'s —
+    a module attribute set on one is not seen through the other's copy. In a real
+    run they are the same object, which is the state this puts back.
+    """
+
+    def point(**fields: object) -> Settings:
+        same = make_settings(**fields)
+        monkeypatch.setattr("scripts.eval.settings", same)
+        monkeypatch.setattr("app.vectorstore.settings", same)
+        return same
+
+    return point
+
+
+def test_the_header_names_the_reranker_the_run_used(
+    library: FakeVectorStore,
+    documents_dir: Path,
+    db_path: Path,
+    question_set: Path,
+    capsys: pytest.CaptureFixture,
+    configured: Callable[..., Settings],
+) -> None:
+    """A reranked run and a plain one are handed a different question by the
+    store, so the line is what makes two reports comparable at all."""
+    configured(rerank="on", rerank_candidates=20, retrieval_k=5)
+
+    evaluate(
+        questions_path=question_set, documents_dir=documents_dir, db_path=db_path
+    )
+
+    assert (
+        "rerank    BAAI/bge-reranker-v2-m3 — top 5 of 20"
+        in capsys.readouterr().out
+    )
+
+
+def test_the_header_says_when_nothing_was_reranked(
+    library: FakeVectorStore,
+    documents_dir: Path,
+    db_path: Path,
+    question_set: Path,
+    capsys: pytest.CaptureFixture,
+    configured: Callable[..., Settings],
+) -> None:
+    configured(rerank="off")
+
+    evaluate(
+        questions_path=question_set, documents_dir=documents_dir, db_path=db_path
+    )
+
+    assert "rerank    off" in capsys.readouterr().out
 
 
 def test_a_question_set_that_cannot_be_read_is_a_message(

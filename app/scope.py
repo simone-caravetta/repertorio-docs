@@ -226,6 +226,12 @@ def build_scoped_retriever(scope: Scope) -> BaseRetriever:
 
     The graph takes either one the same way, which is the whole reason a scope
     changes nothing about the graph.
+
+    Reranking therefore applies to the second path and not the first, and that is
+    a decision rather than an oversight: a document is read whole so that a
+    question can reach a passage the top k would never have ranked, and putting a
+    ranking back on top of it would drop exactly those. `RERANK=on` is not uniform
+    across scopes — see `app/rerank.py`.
     """
     if scope.whole_document and scope.sources and scope.chunks:
         return WholeDocumentRetriever(

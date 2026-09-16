@@ -3,7 +3,7 @@ hermetic Settings."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -70,6 +70,13 @@ def make_settings(**overrides: object) -> Settings:
         "whole_document_max_chars": 24000,
         "description_sample_chars": 6000,
         "description_budget_chars": 2000,
+        # Off, and this is the load-bearing one: with it on, every test that
+        # builds a retriever would build a reranker, which is a download. A test
+        # about reranking turns it on and hands in a `FakeReranker`.
+        "rerank": "off",
+        "rerank_model": "",
+        "rerank_candidates": 20,
+        "rerank_device": "cpu",
     }
     values.update(overrides)
     return Settings(**values)  # type: ignore[arg-type]
@@ -310,6 +317,44 @@ class FakeRetriever:
     ) -> list[Document]:
         self.queries.append(query)
         return self.documents
+
+
+class FakeReranker:
+    """Stands in for the cross-encoder, without downloading one.
+
+    `scores` is handed the pair and the place it came in at, so a test says the
+    order it wants in one expression: `lambda pair, at: -at` keeps what it was
+    given, `lambda pair, at: text.count("x")` ranks by something in the passage.
+    The default is the first of those — a reranker that changes nothing — which
+    is what a test about something further down wants to be holding.
+
+    It records the pairs it was asked about, because "was the reranker called at
+    all, and with what" is most of what there is to check about this step.
+    `predict`'s signature is the one thing that has to be imitated exactly: it is
+    called with keywords and its real one returns a numpy array of floats.
+    """
+
+    def __init__(
+        self,
+        scores: Callable[[tuple[str, str], int], float] | None = None,
+    ) -> None:
+        self.scores = scores or (lambda _pair, at: -float(at))
+        self.asked: list[list[tuple[str, str]]] = []
+        self.batch_sizes: list[int] = []
+        self.progress_bars: list[bool] = []
+
+    def predict(
+        self,
+        pairs: list[tuple[str, str]],
+        *,
+        batch_size: int = 32,
+        show_progress_bar: bool = True,
+        **kwargs: Any,
+    ) -> list[float]:
+        self.asked.append(list(pairs))
+        self.batch_sizes.append(batch_size)
+        self.progress_bars.append(show_progress_bar)
+        return [self.scores(pair, at) for at, pair in enumerate(pairs)]
 
 
 @dataclass

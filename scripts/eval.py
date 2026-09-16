@@ -30,6 +30,7 @@ from app.evals import (
     run_evals,
     summarise,
 )
+from app.rerank import describe_rerank
 from app.scope import build_scoped_retriever, resolve_scope
 
 
@@ -80,6 +81,7 @@ def evaluate(
     print(f"catalog   {short_path(db_path)}")
     print(f"questions {short_path(questions_path)} — {len(questions)}")
     print(f"scope     {scope.label}")
+    print(f"rerank    {describe_rerank(config)}")
 
     if answers:
         said = f"{len(questions)} searched, {len(questions)} answered"

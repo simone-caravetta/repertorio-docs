@@ -273,7 +273,21 @@ doubles as the tool that tells whether a local model is good enough for a given 
       model that reads each answer against its context for the faithfulness number. The set is
       a file of private questions about private documents, so it lives in `data/evals/`.
 - [ ] Tracing (Langfuse) to inspect prompts, tokens and latency per node.
-- [ ] Reranking with `bge-reranker-v2-m3` after retrieval — no index change required.
+- [x] Reranking with `bge-reranker-v2-m3` after retrieval — no index change required. The
+      search is asked for `RERANK_CANDIDATES` (20) passages, a cross-encoder scores each
+      against the question, and the best `RETRIEVAL_K` are what the answer is written from. It
+      is a retriever wrapping a retriever, so nothing downstream — the graph, both commands,
+      the web app, the eval harness — knows it is there, and nothing is re-indexed. Measured
+      against the harness and **off by default**, which is the finding rather than a
+      compromise: on the library this was built against the search already returns the right
+      page first for every question there is, so the two runs are identical — 11/11 documents,
+      11/11 pages, MRR 1.00 with `RERANK=on` and with `RERANK=off`. Reranking can only reorder
+      what the search found, and there is nothing to reorder. What it costs is measured too:
+      about 7 seconds added per question on CPU with six cores busy, plus a 2 GB checkpoint on
+      a fresh clone. `RERANK=on` is one variable, `python -m scripts.eval` and `scripts.chat`
+      both print which pass they ran, and what would settle it is a question set with headroom
+      — questions this library gets wrong. The thirteen written while probing for one landed at
+      rank 1 except a single question at rank 2, which is the shape of the problem.
 - [ ] Hybrid search using the sparse weights BGE-M3 already produces, for codes, names and
       numbers where dense retrieval is weak.
 - [ ] Relevance grading node with a conditional edge: rewrite the query and retry, or state
