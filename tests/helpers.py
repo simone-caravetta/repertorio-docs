@@ -276,6 +276,27 @@ def pieces_of(reply: str) -> list[str]:
     return [word + " " for word in words[:-1]] + words[-1:]
 
 
+def as_a_store_returns(document: Document) -> Document:
+    """The same chunk as the hosted store hands it back.
+
+    Pinecone answers in JSON, where every number is a float, so the page the
+    ingest wrote as 11 comes back as 11.0 — same chunk, same numbers, and a
+    reader that compares types rather than values sees a chunk with no page at
+    all. Nothing in the suite would notice: the fakes and the local store hand
+    back what they were given. This is what makes a test able to.
+    """
+    metadata = {
+        # A bool is an int in Python and not a number in a store, so `table` is
+        # left as the flag it is.
+        key: float(value)
+        if isinstance(value, int) and not isinstance(value, bool)
+        else value
+        for key, value in document.metadata.items()
+    }
+
+    return Document(page_content=document.page_content, metadata=metadata)
+
+
 class FakeRetriever:
     """The graph only ever calls `ainvoke` on a retriever, so that is all this is."""
 

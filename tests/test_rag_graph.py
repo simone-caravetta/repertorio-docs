@@ -15,7 +15,12 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from app.rag_graph import build_graph, format_context, unique_sources
 from app.vectorstore import WholeDocumentRetriever
-from tests.helpers import FakeChatModel, FakeRetriever, FakeVectorStore
+from tests.helpers import (
+    FakeChatModel,
+    FakeRetriever,
+    FakeVectorStore,
+    as_a_store_returns,
+)
 
 THREAD = {"configurable": {"thread_id": "test-thread"}}
 
@@ -75,6 +80,39 @@ def test_a_chunk_without_a_page_or_a_source_still_renders():
     # Nothing to place a passage with, rather than a range at zero: a box drawn
     # from an offset nobody wrote would be the first line of the page.
     assert rows == [{"source": "unknown", "page": None, "ranges": []}]
+
+
+def test_a_chunk_the_store_hands_back_is_the_same_row():
+    """The numbers come back as floats and mean what they said.
+
+    This is every chunk of the real library: the hosted store answers in JSON,
+    where a number has no whole form. Read as a chunk whose page is not a page,
+    the row counts the page from zero and reports no range at all — a citation
+    pointing one page short and nothing to draw on it, neither of them looking
+    wrong enough to be noticed.
+    """
+    context, rows = format_context([as_a_store_returns(make_document())])
+
+    assert context == (
+        "[Source: manuals/manual.pdf | Page: 12]\nThe thing is explained here."
+    )
+    assert rows == [
+        {"source": "manuals/manual.pdf", "page": 12, "ranges": [[120, 148]]}
+    ]
+
+
+def test_a_range_that_starts_before_the_page_has_none():
+    """A range the endpoint would refuse is not one to send: these rows promise
+    the client can ask for them, and a negative offset is not somewhere to point.
+    """
+    document = Document(
+        page_content="text",
+        metadata={"source": "a.pdf", "page": 0, "start": -3, "end": 10},
+    )
+
+    assert format_context([document])[1] == [
+        {"source": "a.pdf", "page": 1, "ranges": []}
+    ]
 
 
 def test_a_chunk_whose_offsets_are_not_a_range_has_none():

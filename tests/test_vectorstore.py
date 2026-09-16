@@ -9,7 +9,7 @@ from langchain_core.documents import Document
 
 import app.vectorstore as vectorstore_module
 from app.vectorstore import WholeDocumentRetriever, ensure_index
-from tests.helpers import FakeVectorStore, make_settings
+from tests.helpers import FakeVectorStore, as_a_store_returns, make_settings
 
 
 def _flat_vectors(dimension: int = 8):
@@ -274,6 +274,29 @@ def test_a_whole_document_comes_back_in_reading_order(monkeypatch):
 
     assert [one.metadata["chunk_id"] for one in found] == [0, 1, 0]
     assert [one.metadata["page"] for one in found] == [0, 0, 1]
+
+
+def test_a_whole_document_comes_back_in_reading_order_from_a_store(monkeypatch):
+    """The order is read off numbers the store gives back as floats.
+
+    Read as a chunk with no page, every chunk of the real library sorts as the
+    first one, and the order the search handed them in is the order they stay
+    in — which is a similarity ranking, the very thing this sort is here to undo.
+    """
+    store = wired(
+        monkeypatch,
+        holding(
+            as_a_store_returns(chunk("manuals/a.pdf", 1, 0)),
+            as_a_store_returns(chunk("manuals/a.pdf", 0, 1)),
+            as_a_store_returns(chunk("manuals/a.pdf", 0, 0)),
+        ),
+    )
+
+    retriever = WholeDocumentRetriever(store=store, source="manuals/a.pdf", k=3)
+    found = retriever.invoke("q")
+
+    assert [one.metadata["page"] for one in found] == [0.0, 0.0, 1.0]
+    assert [one.metadata["chunk_id"] for one in found] == [0.0, 1.0, 0.0]
 
 
 def test_a_whole_document_is_asked_for_in_full(monkeypatch):

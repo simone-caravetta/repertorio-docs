@@ -16,6 +16,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from app.chat_model import build_chat_model
+from app.ingestion import whole_number
 from app.vectorstore import get_retriever
 
 
@@ -133,8 +134,8 @@ def format_context(
 
     for doc in documents:
         source = str(doc.metadata.get("source", "unknown"))
-        page = doc.metadata.get("page")
-        if isinstance(page, int):
+        page = whole_number(doc.metadata.get("page"))
+        if page is not None:
             page = page + 1
 
         label = f"Source: {source}"
@@ -158,10 +159,16 @@ def ranges_in(metadata: Mapping[str, Any]) -> list[list[int]]:
     way to be placed, and says so with an empty list. A range of zeros would be a
     confident answer to a question that was never asked: the first line of the
     page, drawn from a passage that may be anywhere on it.
-    """
-    start, end = metadata.get("start"), metadata.get("end")
 
-    if isinstance(start, int) and isinstance(end, int) and end > start:
+    The offsets arrive as whatever the store read them back as, which is why they
+    go through `whole_number` and not a comparison of types. A range that starts
+    before the beginning of the page is left out for the same reason a missing
+    one is: this list is a promise that the endpoint can be asked for these, and
+    a range it would refuse is not one to send.
+    """
+    start, end = whole_number(metadata.get("start")), whole_number(metadata.get("end"))
+
+    if start is not None and end is not None and start >= 0 and end > start:
         return [[start, end]]
 
     return []

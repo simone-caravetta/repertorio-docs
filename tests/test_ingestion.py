@@ -13,6 +13,7 @@ from app.ingestion import (
     compute_file_hash,
     ingest_one,
     load_pdf,
+    whole_number,
 )
 from tests.helpers import (
     BODY,
@@ -49,6 +50,24 @@ def test_compute_file_hash_follows_the_content(tmp_path: Path) -> None:
     path.write_bytes(b"after")
 
     assert compute_file_hash(path) != before
+
+
+def test_a_whole_number_is_read_as_one_however_it_arrives() -> None:
+    """The store decides the type and the value is what was written either way."""
+    assert whole_number(44) == 44
+    assert whole_number(44.0) == 44
+    assert whole_number(0.0) == 0
+
+
+def test_what_is_not_a_whole_number_is_none() -> None:
+    """Read as absent, which is what a caller does with a number nobody gave it.
+
+    A bool is an int in Python and not a page; a fraction is not an offset the
+    reader wrote; a string is what a store hands back when it was told to keep
+    the metadata as text.
+    """
+    for value in (None, True, False, "44", 44.5, float("nan"), float("inf")):
+        assert whole_number(value) is None, value
 
 
 def test_stable_id_is_deterministic() -> None:

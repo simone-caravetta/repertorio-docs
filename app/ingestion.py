@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStore
@@ -50,6 +51,27 @@ def indexer_id(*, chunk_size: int, chunk_overlap: int) -> str:
     fact, and the catalog keeps it in a column of its own.
     """
     return f"{pdf.READER}-{pdf.READER_VERSION}|{chunk_size}/{chunk_overlap}"
+
+
+def whole_number(value: Any) -> int | None:
+    """A number out of a chunk's metadata, as a whole number, or None.
+
+    The ingest writes these as whole numbers and a store hands them back, and a
+    store is free to hand them back differently: Pinecone answers with JSON,
+    where every number is a float, so the page written as 44 comes back as 44.0.
+    Read with `isinstance(value, int)` that is answered no — and every chunk of
+    the real library reads as one with no page and no offsets, a citation counted
+    from the wrong page and a passage with nothing to draw on, neither of them
+    looking wrong enough to be noticed.
+
+    A value that is not a whole number is not one of these and reads as absent,
+    which is what the callers already do with a page nobody gave them: a bool is
+    not a page, and a fraction is not an offset the reader wrote.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+
+    return int(value) if float(value).is_integer() else None
 
 
 def _stable_id(doc: Document) -> str:

@@ -13,6 +13,7 @@ from pinecone import Pinecone, ServerlessSpec
 
 from app.config import settings, validate_api_keys
 from app.embeddings import get_embeddings
+from app.ingestion import whole_number
 
 # Any text will do: only the length of the vector that comes back is read.
 DIMENSION_PROBE = "dimension probe"
@@ -198,12 +199,16 @@ class WholeDocumentRetriever(BaseRetriever):
 
 
 def _position(chunk: Document) -> tuple[int, int]:
-    """Where a chunk sits in its document: page first, then position on it."""
-    page = chunk.metadata.get("page")
-    index = chunk.metadata.get("chunk_id")
+    """Where a chunk sits in its document: page first, then position on it.
+
+    A chunk whose page the store did not give back as a number sorts as the first
+    page and the first position, which leaves the order it arrived in; the sort
+    is here to undo a similarity ranking, and a chunk with no place is not one it
+    can place.
+    """
     return (
-        page if isinstance(page, int) else 0,
-        index if isinstance(index, int) else 0,
+        whole_number(chunk.metadata.get("page")) or 0,
+        whole_number(chunk.metadata.get("chunk_id")) or 0,
     )
 
 
