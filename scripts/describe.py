@@ -1,15 +1,16 @@
 """What each document is about, written by the chat model and kept in the catalog.
 
-A question about the library is answered from the catalog, and the catalog has
-held an empty `description` column since it was created. This fills it: one model
-call per document, over a sample taken from across it, written once and read back
-by the console, by the page and by every answer that has that document in scope.
+A question about the library is answered from the catalog, and what the catalog
+says about a document is one line on its row. This is the command that writes it:
+one model call per document, over a sample taken from across it, written once and
+read back by the console, by the page and by every answer that has that document
+in scope.
 
-A command of its own rather than a step of the sync. The sync needs no key and
-makes no call — the embeddings run on this machine and the vectors go to a folder
-or to an index — and giving it a model to reach would turn indexing a folder of a
-hundred files into a hundred calls nobody asked for. Here the calls are the point,
-and they happen when someone runs this.
+The sync writes a description for every document it indexes that has none, so
+this command is for everything around that: a library indexed before the sync did
+it, a call that failed on the run, and a document whose description is out of
+date because what it is about has changed. `--all` writes them all again, and a
+named document is written again whatever the catalog says about it.
 """
 
 from __future__ import annotations

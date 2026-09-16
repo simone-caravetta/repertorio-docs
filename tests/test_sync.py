@@ -5,7 +5,13 @@ from pathlib import Path
 from app.catalog import Catalog
 from app.ingestion import compute_file_hash, indexer_id
 from app.lifecycle import SyncReport, sync_documents
-from tests.helpers import EMBEDDING_MODEL, SENTENCE, FakeVectorStore, make_pdf
+from tests.helpers import (
+    EMBEDDING_MODEL,
+    SENTENCE,
+    FakeChatModel,
+    FakeVectorStore,
+    make_pdf,
+)
 
 MANUAL = "manuals/manual.pdf"
 REPORT = "reports/report.pdf"
@@ -449,3 +455,191 @@ def test_a_dry_run_reports_what_a_real_run_would_do(
     assert catalog.get(MANUAL).file_hash == indexed_hash
     assert catalog.get(REPORT).status == "indexed"
     assert catalog.get("scans/scan.pdf") is None
+
+
+# --- the descriptions, written as the documents are indexed ------------------
+#
+# What a description is, and how one is written, is tested in
+# `tests/test_descriptions.py`. Here it is the sync's part in it: which documents
+# a run describes, which it leaves alone, and what a call that fails costs.
+
+
+def test_a_new_document_is_described_as_it_is_indexed(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    model = FakeChatModel(replies=["Una guía del manual.", "Last year's report."])
+
+    report = run(documents_dir, db_path, store, chat_model=model)
+
+    # One call per document, in catalog order, and each one kept.
+    assert report.described == [MANUAL, REPORT]
+    assert report.description_failed == []
+    assert len(model.prompts) == 2
+
+    catalog = Catalog(db_path)
+    assert catalog.get(MANUAL).description == "Una guía del manual."
+    assert catalog.get(REPORT).description == "Last year's report."
+
+
+def test_a_run_with_no_model_describes_nothing(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    report = run(documents_dir, db_path, store)
+
+    assert report.described == []
+    assert report.description_failed == []
+
+    catalog = Catalog(db_path)
+    assert catalog.get(MANUAL).status == "indexed"
+    assert catalog.get(MANUAL).description is None
+
+
+def test_a_dry_run_calls_no_model(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    # A model with no replies at all: the first call to it would fail, so a run
+    # that reaches the description pass is a run that fails this test.
+    model = FakeChatModel(replies=[])
+
+    report = run(documents_dir, db_path, None, dry_run=True, chat_model=model)
+
+    assert report.described == []
+    assert model.prompts == []
+
+
+def test_a_described_document_is_not_described_again(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    run(
+        documents_dir,
+        db_path,
+        store,
+        chat_model=FakeChatModel(replies=["A manual.", "A report."]),
+    )
+
+    # A run that describes the same documents a second time is a run that spends
+    # a call per document for nothing, and this says it does not.
+    model = FakeChatModel(replies=[])
+    report = run(documents_dir, db_path, store, chat_model=model)
+
+    assert report.described == []
+    assert model.prompts == []
+    assert Catalog(db_path).get(MANUAL).description == "A manual."
+
+
+def test_a_document_with_no_description_is_described_on_a_later_run(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    # A library indexed before the sync wrote descriptions, or by a run told not
+    # to: nothing about the files says so, and the next run writes them.
+    run(documents_dir, db_path, store)
+
+    model = FakeChatModel(replies=["A manual.", "A report."])
+    report = run(documents_dir, db_path, store, chat_model=model)
+
+    assert report.skipped == [MANUAL, REPORT]  # no vectors were written
+    assert report.described == [MANUAL, REPORT]
+
+
+def test_a_changed_file_is_described_again(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    run(
+        documents_dir,
+        db_path,
+        store,
+        chat_model=FakeChatModel(replies=["A manual.", "A report."]),
+    )
+    edit(documents_dir, MANUAL, SENTENCE * 5 + "A second edition, revised.")
+
+    model = FakeChatModel(replies=["A manual, second edition."])
+    report = run(documents_dir, db_path, store, chat_model=model)
+
+    assert report.updated == [MANUAL]
+    assert report.described == [MANUAL]
+    assert Catalog(db_path).get(MANUAL).description == "A manual, second edition."
+
+    # The document that did not change was not described: one call, not two.
+    assert len(model.prompts) == 1
+
+
+def test_a_changed_file_whose_description_fails_keeps_none(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    run(
+        documents_dir,
+        db_path,
+        store,
+        chat_model=FakeChatModel(replies=["A manual.", "A report."]),
+    )
+    edit(documents_dir, MANUAL, SENTENCE * 5 + "A second edition, revised.")
+
+    report = run(documents_dir, db_path, store, chat_model=FakeChatModel(replies=[]))
+
+    # The old description described text that is no longer in the document. Left
+    # in place it would be read as a description of this edition, which is the
+    # one outcome worth more than a blank.
+    assert report.updated == [MANUAL]
+    assert Catalog(db_path).get(MANUAL).description is None
+
+
+def test_a_document_indexed_again_for_its_fingerprint_keeps_its_description(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    run(
+        documents_dir,
+        db_path,
+        store,
+        chat_model=FakeChatModel(replies=["A manual.", "A report."]),
+    )
+    # Another reader or another cut: the same file, indexed again.
+    restamp(documents_dir, db_path, MANUAL, indexer="other-reader|1/1")
+
+    model = FakeChatModel(replies=[])
+    report = run(documents_dir, db_path, store, chat_model=model)
+
+    assert report.updated == [MANUAL]
+    assert report.described == []
+    assert model.prompts == []
+    assert Catalog(db_path).get(MANUAL).description == "A manual."
+
+
+def test_a_restored_document_keeps_its_description(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    run(
+        documents_dir,
+        db_path,
+        store,
+        chat_model=FakeChatModel(replies=["A manual.", "A report."]),
+    )
+
+    path = documents_dir / REPORT
+    body = path.read_bytes()
+    path.unlink()
+    run(documents_dir, db_path, store)
+    path.write_bytes(body)
+
+    model = FakeChatModel(replies=[])
+    report = run(documents_dir, db_path, store, chat_model=model)
+
+    assert report.restored == [REPORT]
+    assert report.described == []
+    assert Catalog(db_path).get(REPORT).description == "A report."
+
+
+def test_a_description_that_cannot_be_written_leaves_the_document_indexed(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    # Every call raises: a key that stopped working, an endpoint that is down.
+    report = run(documents_dir, db_path, store, chat_model=FakeChatModel(replies=[]))
+
+    assert report.described == []
+    assert [path for path, _ in report.description_failed] == [MANUAL, REPORT]
+    assert report.failed == []  # the documents themselves are not the failure
+
+    catalog = Catalog(db_path)
+    for source in (MANUAL, REPORT):
+        assert catalog.get(source).status == "indexed"
+        assert catalog.get(source).chunk_count > 0
+        assert catalog.get(source).description is None

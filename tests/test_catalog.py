@@ -377,6 +377,23 @@ def test_describing_an_unknown_document_raises(catalog: Catalog) -> None:
         catalog.set_description("ghost.pdf", "A manual about the thing.")
 
 
+def test_a_description_can_be_taken_back(catalog: Catalog) -> None:
+    """What the sync does to a description written from another edition."""
+    catalog.add_file("a.pdf", "a")
+    catalog.set_description("a.pdf", "A manual about the thing.")
+
+    catalog.clear_description("a.pdf")
+
+    assert catalog.get("a.pdf").description is None
+
+
+def test_taking_back_the_description_of_an_unknown_document_raises(
+    catalog: Catalog,
+) -> None:
+    with pytest.raises(KeyError, match="No such document"):
+        catalog.clear_description("ghost.pdf")
+
+
 def test_a_category_takes_the_documents_below_it(catalog: Catalog) -> None:
     for path in ("manuals/a.pdf", "manuals/ancient/b.pdf", "reports/c.pdf"):
         catalog.add_file(path, Path(path).stem, category=category_from_path(path))

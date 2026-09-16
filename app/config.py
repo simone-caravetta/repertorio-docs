@@ -134,7 +134,9 @@ def describe_vector_store(config: Settings) -> str:
 def validate_api_keys() -> None:
     """Check the keys the vector index needs, and name the ones that are missing.
 
-    The chat model checks its own key when it is built: a sync does not talk to it.
+    The two keys are separate, and so are the checks: the chat model checks its
+    own when it is built, whether the console, the describe command or a sync is
+    the one building it.
     """
     missing = []
     if not settings.pinecone_api_key:

@@ -4,9 +4,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.vectorstores import VectorStore
 
 from app.catalog import Catalog, DocumentRecord, category_from_path
+from app.descriptions import undescribed, write_descriptions
 from app.ingestion import (
     SUPPORTED_EXTENSIONS,
     compute_file_hash,
@@ -29,6 +31,8 @@ class SyncReport:
     trashed: list[str] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+    described: list[str] = field(default_factory=list)
+    description_failed: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -79,6 +83,8 @@ def sync_documents(
     dry_run: bool = False,
     chunk_size: int = 900,
     chunk_overlap: int = 150,
+    chat_model: BaseChatModel | None = None,
+    description_sample_chars: int = 6000,
 ) -> SyncReport:
     """Reconcile the documents folder, the catalog and the vector store.
 
@@ -97,6 +103,23 @@ def sync_documents(
     `embedding_model` is required for the same reason: a run that does not know
     which model it is using cannot record one, and a run that records none makes
     every document stale for the run after it.
+
+    When a `chat_model` is given, the run also writes each document's
+    description — the sentence read back by the console, the page and the context
+    of an answer — by the same call `scripts.describe` makes, over the sample it
+    takes. A description is written from the text of one edition of a file, so a
+    file this run reads as a different one drops it, and every indexed document
+    with nothing written about it is written about: one just indexed, one indexed
+    before the sync did this, one whose call failed on the run before. A call
+    that fails is reported and the run goes on, because the document being
+    indexed is a fact of its own; a run that passes no model describes nothing,
+    which is what a dry run, a machine with no key and `--no-descriptions` all
+    come to.
+
+    Describing reads the file a second time, through `load_pdf`. That is one
+    reading of a document, on the run that describes it, and it buys the
+    description written here being the one the command would have written —
+    rather than a second way of writing one that agrees with it until it does not.
 
     With `dry_run` nothing is written anywhere: no directory is created, no
     catalog, no vector store. The returned report describes what a real run
@@ -156,6 +179,11 @@ def sync_documents(
         return report
 
     def index(source: str) -> None:
+        # The row as the run found it: what the file hashed to before this run
+        # read it, which is what says whether a description on it describes the
+        # text that is going into the index or the text that was there before.
+        before = rows.get(source)
+
         catalog.set_status(source, "indexing")
 
         try:
@@ -188,6 +216,15 @@ def sync_documents(
             embedding_model=embedding_model,
         )
 
+        # A description of another edition of this file is about a document that
+        # is no longer the one here, so it goes, and the pass below writes the
+        # new one. A row whose hash is the one just written describes this text —
+        # the file is untouched and only the fingerprint moved, which is what a
+        # changed cut or another embedding model comes to, and neither of them
+        # changes a line of what the description is written from.
+        if before is not None and before.file_hash != result.file_hash:
+            catalog.clear_description(source)
+
     for source in report.added:
         # The folder names the category once, here, when the row is created. From
         # then on the catalog owns it, so a document moved by hand stays where it
@@ -211,6 +248,20 @@ def sync_documents(
     for source in report.trashed:
         delete_document_vectors(source, vectorstore)
         catalog.trash(source)
+
+    if chat_model is not None:
+        # After the catalog has settled, and over the library rather than over
+        # this run's work: what has no description is what has none, whatever
+        # left it that way.
+        written = write_descriptions(
+            chat_model,
+            catalog,
+            undescribed(catalog),
+            documents_dir=documents_dir,
+            sample_chars=description_sample_chars,
+        )
+        report.described = [path for path, _ in written.written]
+        report.description_failed = list(written.failed)
 
     return report
 

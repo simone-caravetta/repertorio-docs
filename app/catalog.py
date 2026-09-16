@@ -309,6 +309,29 @@ class Catalog:
             path,
         )
 
+    def clear_description(self, path: str) -> None:
+        """Take back what was written about the document.
+
+        A description is written from the text of one edition of a file, so the
+        sync drops it when the file it describes turns out to be a different
+        edition: what the description says is no longer about the document, and
+        a row with nothing written about it is one the run writes again.
+
+        Dropped here rather than replaced on the spot, because the call that
+        writes the new one can fail. A description of the previous edition left
+        under the title of this one is answered from as though it were about the
+        document in hand, and it reads like any other.
+        """
+        self._write(
+            """
+            UPDATE documents
+               SET description = NULL, updated_at = datetime('now')
+             WHERE path = ?
+            """,
+            (path,),
+            path,
+        )
+
     def sources_in_category(
         self, category: str | None, *, include_descendants: bool = True
     ) -> list[str]:

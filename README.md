@@ -32,8 +32,7 @@ PINECONE_API_KEY=...
 Put your PDFs in `data/documents/`, then:
 
 ```bash
-python -m scripts.sync      # index what is new or has changed
-python -m scripts.describe  # write what each document contains, one model call each
+python -m scripts.sync      # index what is new or has changed, and describe it
 python -m scripts.chat      # ask questions about it
 ```
 
@@ -110,6 +109,12 @@ document beside a large one is never among them. So each document is described o
 description goes into the context of every answer, under the list of documents the question
 was asked of.
 
+The sync writes one for every document it indexes that has none, so a library it has just
+been through is described in full, and indexing a folder costs one model call per document.
+`python -m scripts.sync --no-descriptions` indexes without writing any, for a folder of a
+hundred files or a machine with no key; the vectors are the same either way, and the missing
+descriptions can be written later without re-indexing anything.
+
 ```bash
 python -m scripts.describe                # the documents that have no description yet
 python -m scripts.describe manuals/a.pdf  # this one, described again
@@ -121,17 +126,17 @@ One model call per document, over a sample taken from across the document rather
 its first pages, and the description is written in the language the document is written in.
 It is kept in the catalog, so it is written once and read every time: `python -m
 scripts.catalog --documents` prints it under the document, the page shows it under the
-title, and it is part of what the answer is written from. A second run costs nothing — a
-described document is left alone unless you name it or pass `--all`.
+title, and it is part of what the answer is written from. A document that has a description
+is left alone, so a run over a library that has not changed costs nothing, and one whose
+description could not be written is tried again on the next run. A file that has changed
+since it was described is written about again: the description is written from the file, so
+an edition that is no longer there takes its description with it, and the title of a document
+is never left standing over a description of another edition.
 
 `DESCRIPTION_SAMPLE_CHARS` is how much of a document is read to write its description (6000
 by default); `DESCRIPTION_BUDGET_CHARS` is how much of the catalog goes into one answer's
 context (2000). The documents are named in that context either way, so a scope too large to
 describe loses the descriptions and nothing else; 0 turns either budget off.
-
-The sync does not call a model, so it stays free and needs no key. That is why this is a
-command of its own rather than a step of the sync: nothing is spent until you ask, and a
-document is described by `python -m scripts.describe`, not when it is indexed.
 
 ## Web interface
 

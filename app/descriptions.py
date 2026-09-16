@@ -11,6 +11,12 @@ document, it costs one model call per document instead of one per question, and
 it is read back by the console, by the page, and by the context an answer is
 written from — which is the point: a document whose passages the search did not
 return is still a document the answer can say something about.
+
+Two callers write one, and both come through `write_descriptions`: the sync, as
+it indexes, and `scripts.describe`, for a library that is already indexed. A
+description therefore does not depend on which of them wrote it, and the sync
+cannot drift into describing a document differently from the command that exists
+to describe it.
 """
 
 from __future__ import annotations

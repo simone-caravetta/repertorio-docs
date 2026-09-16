@@ -225,13 +225,20 @@ about them.
 
 ## Phase 5 — Smart ingestion
 
-- [x] Description per document, written by the configured chat model: `python -m
-      scripts.describe`, one model call per document, over a sample taken from across the
-      document rather than only its beginning, in the language the document is written in,
-      kept in the catalog's `description` column. Deliberately not at ingest and not part of
-      the sync, which makes no model calls and so stays free and needs no key: what is spent
-      is spent when the command is run. A second run describes only what has none, so it can
-      follow every sync at no cost, and naming a document describes it again.
+- [x] Description per document, written by the configured chat model, one model call per
+      document, over a sample taken from across the document rather than only its beginning,
+      in the language the document is written in, kept in the catalog's `description`
+      column. Written at ingest: the sync describes what has no description, by the same
+      call `scripts.describe` makes, so a library it has just been through is described in
+      full. Indexing a folder therefore costs one model call per document, and
+      `--no-descriptions` indexes it without spending any — the vectors are the same either
+      way, and the descriptions can be written afterwards without re-indexing. What a run
+      describes is what has no description, so a described document costs nothing, and a
+      document whose file has changed has its description dropped first: it describes an
+      edition that is no longer there, and a stale description read under a document's title
+      looks like any other. `scripts.describe` remains for the rest: a library indexed
+      before the sync did this, a call that failed on the run, a document named by hand, and
+      `--all` to write every one of them again.
       `DESCRIPTION_SAMPLE_CHARS` is how much of a document is read, `DESCRIPTION_BUDGET_CHARS`
       how much of the catalog goes into one answer's context. The description is placed there
       under the list of the documents searched, which is the fix for the failure that named
@@ -239,9 +246,9 @@ about them.
       beside a large document returns that document's passages and nothing about the others,
       and a description is the answer rather than a sample of one. It is shown in the page
       and in `python -m scripts.catalog --documents`.
-- [ ] The title generated rather than taken from the file name, a description written at
-      ingest, and a description that can be edited or written by hand. Today nothing but
-      `scripts.describe` writes the column and nothing edits it.
+- [ ] The title generated rather than taken from the file name, and a description that can
+      be edited or written by hand. Two things write the column today — the sync, as it
+      indexes, and `scripts.describe` — and nothing edits what either of them left.
 - [ ] Auto-derived tags, document type, language and date.
 - [x] Structure-aware chunking with PyMuPDF: keep tables whole, split on headings. Each chunk
       carries the heading it sits under and its level, and says when it is a table.
