@@ -141,21 +141,47 @@ def read_pages(path) -> list[Page]:
         return [_read_page(page) for page in document]
 
 
-def boxes(path, page: int, start: int, end: int) -> list[list[float]]:
+def read_page(path, page: int) -> Page:
+    """One page of a document, read on its own and counted from one.
+
+    A document is read whole to be indexed; a page is read to be pointed at, and
+    reading the hundred and five of them to draw on one is work nobody asked for
+    — this is a request from a reader clicking a citation, and it is answered in
+    the time one page takes rather than in the time the book does.
+
+    A page the document does not have raises `IndexError` rather than being read
+    as whichever page a number happens to name. A negative index is a valid one:
+    a page counted from one that arrives here as a zero is the last page of the
+    document, and nothing about the page that comes back says so.
+    """
+    with pymupdf.open(path) as document:
+        if not 1 <= page <= document.page_count:
+            raise IndexError(
+                f"No page {page} in a document of {document.page_count}"
+            )
+
+        return _read_page(document[page - 1])
+
+
+def boxes(page: Page, start: int, end: int) -> list[list[float]]:
     """The rectangles covering `text[start:end]` of one page, as the reader sees it.
 
     Every span the range touches contributes its own rectangle, so a passage that
     wraps across three lines comes back as three: one box around the lot would
     cover the whole width of the page and say nothing.
-    """
-    spans = read_pages(path)[page - 1].spans
 
+    The page is handed in already read rather than named by a number against a
+    file. A caller holding a number has to turn it into an index, and a page
+    counted from one that arrived here as a zero would be the last page of the
+    document — a wrong answer to a question about the first, and nothing in the
+    rectangles to say so.
+    """
     # Overlapping by at least one character, which is the test `max < min` and not
     # the pair of comparisons it looks like: compared separately, a range of no
     # characters sitting inside a span passes both of them.
     touched = [
         span
-        for span in spans
+        for span in page.spans
         if max(start, span.start) < min(end, span.end)
     ]
 

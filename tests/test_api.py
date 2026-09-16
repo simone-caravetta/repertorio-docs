@@ -19,11 +19,19 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langchain_core.documents import Document
 
+from app import pdf
 from app.api import create_app
 from app.catalog import Catalog
 from app.config import Settings
 from app.scope import Scope
-from tests.helpers import FakeChatModel, FakeRetriever, make_settings
+from tests.helpers import (
+    FakeChatModel,
+    FakeRetriever,
+    Line,
+    make_pdf,
+    make_settings,
+    make_structured_pdf,
+)
 
 MANUAL = "manuals/manual.pdf"
 ANNEX = "manuals/annex.pdf"
@@ -89,17 +97,28 @@ def harness_for(
 
 
 def passage(
-    source: str = MANUAL, page: int = 11, chunk: int = 0
+    source: str = MANUAL,
+    page: int = 11,
+    chunk: int = 0,
+    start: int = 0,
+    end: int = 28,
 ) -> Document:
     """One retrieved chunk, with the metadata a real one carries.
 
     `page` is the zero-based one a store holds, which the graph reports as the
     number a reader would turn to. Two chunks differing only in `chunk` are two
-    passages of one page.
+    passages of one page, and `start` and `end` are where each of them sits in
+    that page's text — the offsets a citation is drawn with.
     """
     return Document(
         page_content="The thing is explained here.",
-        metadata={"source": source, "page": page, "chunk_id": chunk},
+        metadata={
+            "source": source,
+            "page": page,
+            "chunk_id": chunk,
+            "start": start,
+            "end": end,
+        },
     )
 
 
@@ -331,6 +350,174 @@ def test_the_retriever_is_built_from_the_scope_that_was_asked_for(
     assert harness.scopes[0].whole_document is True
 
 
+# ------------------------------------------------------------------ the boxes
+
+# A page of two lines, so that a range covering both of them is a range with two
+# rectangles to answer with — which one flat run of text could never be.
+FIRST_LINE = "The first line of the page."
+SECOND_LINE = "The second line, below it."
+TWO_LINES = "manuals/two-lines.pdf"
+
+
+def a_page_of_two_lines(config: Settings, name: str = TWO_LINES) -> str:
+    """Write a two-line document into the library, and return its page text.
+
+    Real typography rather than `make_pdf`, which lays a page down as one run of
+    text: two lines that can be told apart by where they are need a page with two
+    of them on it. The text comes back because that is what the offsets are into
+    — the same text the reader builds at ingest, which is the whole contract the
+    two halves of this share.
+    """
+    path = make_structured_pdf(
+        Path(config.documents_dir) / name,
+        [[Line(FIRST_LINE), Line(SECOND_LINE)]],
+    )
+
+    return pdf.read_pages(path)[0].text
+
+
+def boxes_of(client: TestClient, **params: Any) -> Any:
+    return client.get(
+        "/api/documents/boxes",
+        params={"source": TWO_LINES, "page": 1, "start": 0, "end": 1, **params},
+    )
+
+
+def test_a_range_comes_back_as_the_boxes_that_cover_it(config: Settings):
+    text = a_page_of_two_lines(config)
+    start = text.index(FIRST_LINE)
+
+    with harness_for(config, replies=[]).client() as client:
+        answer = boxes_of(client, start=start, end=start + len(FIRST_LINE))
+
+    assert answer.status_code == 200
+    assert answer.json()["source"] == TWO_LINES
+    assert answer.json()["page"] == 1
+
+    boxes = answer.json()["boxes"]
+    assert len(boxes) == 1
+    x0, y0, x1, y1 = boxes[0]
+    # A line and not a page: written from the left margin, ending before the
+    # right one, and as tall as a line of text is.
+    assert x0 == pytest.approx(72, abs=1)
+    assert x1 < 612
+    assert 0 < y1 - y0 < 20
+
+
+def test_a_range_across_two_lines_is_two_boxes(config: Settings):
+    """One box around the lot would be the width of the page and say nothing."""
+    text = a_page_of_two_lines(config)
+    start = text.index(FIRST_LINE)
+    end = text.index(SECOND_LINE) + len(SECOND_LINE)
+
+    with harness_for(config, replies=[]).client() as client:
+        boxes = boxes_of(client, start=start, end=end).json()["boxes"]
+
+    assert len(boxes) == 2
+    # The one above is above the other, which is what tells two lines from two
+    # halves of one.
+    assert boxes[0][1] < boxes[1][1]
+
+
+def test_a_range_that_covers_nothing_is_an_empty_answer(config: Settings):
+    """`[]` rather than a refusal: the range is a real one that holds no text.
+
+    The character between the two lines is a newline, which nothing was drawn on.
+    """
+    text = a_page_of_two_lines(config)
+    gap = text.index("\n")
+
+    with harness_for(config, replies=[]).client() as client:
+        answer = boxes_of(client, start=gap, end=gap + 1)
+
+    assert answer.status_code == 200
+    assert answer.json()["boxes"] == []
+
+
+def test_a_page_needs_no_catalog(db_path: Path, config: Settings):
+    """The folder says a document is here, and the catalog has no part in it.
+
+    A file that has never been synced still has pages, and a viewer asked about
+    one of them can be answered without a database being opened — or, as here,
+    without one existing at all.
+    """
+    assert not db_path.exists()
+    a_page_of_two_lines(config)
+
+    with harness_for(config, replies=[]).client() as client:
+        answer = boxes_of(client, start=0, end=len(FIRST_LINE))
+
+    assert answer.status_code == 200
+
+
+def test_a_source_outside_the_documents_folder_is_refused(
+    tmp_path: Path, config: Settings
+):
+    """The file is there and is a PDF, and it is not in this library.
+
+    Written outside the documents folder on purpose: without the containment
+    check the path resolves to a file that opens, and the answer would be the
+    rectangles of a document this server was never pointed at.
+    """
+    make_pdf(tmp_path / "outside.pdf", "Not in the library.")
+
+    with harness_for(config, replies=[]).client() as client:
+        answer = boxes_of(client, source="../outside.pdf", start=0, end=4)
+
+    assert answer.status_code == 400
+    assert answer.json()["detail"] == "Not a document here: ../outside.pdf"
+
+
+def test_a_file_that_is_not_a_pdf_is_refused(config: Settings):
+    """Readable, and not a document this library reads: the sync ignores it too."""
+    make_pdf(Path(config.documents_dir) / "manuals" / "notes.txt", "Not a PDF here.")
+
+    with harness_for(config, replies=[]).client() as client:
+        answer = boxes_of(client, source="manuals/notes.txt", start=0, end=4)
+
+    assert answer.status_code == 400
+    assert answer.json()["detail"] == "Not a document here: manuals/notes.txt"
+
+
+def test_a_document_that_is_not_there_is_refused(config: Settings):
+    with harness_for(config, replies=[]).client() as client:
+        answer = boxes_of(client, source="manuals/absent.pdf", start=0, end=4)
+
+    assert answer.status_code == 400
+    assert answer.json()["detail"] == "Not a document here: manuals/absent.pdf"
+
+
+@pytest.mark.parametrize("page", [0, 2, 99])
+def test_a_page_the_document_does_not_have_is_refused(config: Settings, page: int):
+    """Zero is the one that matters: it is a valid index, and the last page.
+
+    Read as an index rather than checked as a number, a request about page zero
+    would be answered with the rectangles of the document's last page, and
+    nothing in the answer would say the question had been about another one.
+    """
+    text = a_page_of_two_lines(config)
+    start = text.index(FIRST_LINE)
+
+    with harness_for(config, replies=[]).client() as client:
+        answer = boxes_of(client, page=page, start=start, end=start + len(FIRST_LINE))
+
+    assert answer.status_code == 400
+    assert answer.json()["detail"] == f"No page {page} in {TWO_LINES}"
+
+
+@pytest.mark.parametrize(
+    ("start", "end"), [(-1, 5), (40, 20), (20, 20)]
+)
+def test_a_range_that_is_not_one_is_refused(config: Settings, start: int, end: int):
+    a_page_of_two_lines(config)
+
+    with harness_for(config, replies=[]).client() as client:
+        answer = boxes_of(client, start=start, end=end)
+
+    assert answer.status_code == 400
+    assert answer.json()["detail"] == f"Not a range: {start}-{end}"
+
+
 # --------------------------------------------------------------- the answer
 
 
@@ -343,8 +530,13 @@ def test_the_sources_arrive_before_the_answer_is_written(
         config,
         replies=["a standalone question", "the answer is here"],
         # Two passages of one page and one of another: the page is the source, so
-        # the answer cites two places and not three.
-        documents=[passage(), passage(chunk=1), passage(page=12)],
+        # the answer cites two places and not three — and the two passages of the
+        # first are two ranges on the one row, rather than one being dropped.
+        documents=[
+            passage(),
+            passage(chunk=1, start=300, end=328),
+            passage(page=12),
+        ],
     )
 
     with harness.client() as client:
@@ -360,8 +552,8 @@ def test_the_sources_arrive_before_the_answer_is_written(
         "sources",
         {
             "sources": [
-                {"source": MANUAL, "page": 12},
-                {"source": MANUAL, "page": 13},
+                {"source": MANUAL, "page": 12, "ranges": [[0, 28], [300, 328]]},
+                {"source": MANUAL, "page": 13, "ranges": [[0, 28]]},
             ]
         },
     )

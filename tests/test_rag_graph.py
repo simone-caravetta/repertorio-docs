@@ -13,7 +13,7 @@ import pytest
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.rag_graph import build_graph, format_context
+from app.rag_graph import build_graph, format_context, unique_sources
 from app.vectorstore import WholeDocumentRetriever
 from tests.helpers import FakeChatModel, FakeRetriever, FakeVectorStore
 
@@ -24,6 +24,9 @@ def make_document(page: int | None = 11) -> Document:
     metadata: dict[str, Any] = {"source": "manuals/manual.pdf"}
     if page is not None:
         metadata["page"] = page
+    # The offsets a chunk carries, which are what a citation is drawn with.
+    metadata["start"] = 120
+    metadata["end"] = 148
     return Document(page_content="The thing is explained here.", metadata=metadata)
 
 
@@ -58,14 +61,77 @@ def test_the_context_carries_the_source_and_a_one_based_page():
     assert context == (
         "[Source: manuals/manual.pdf | Page: 12]\nThe thing is explained here."
     )
-    assert rows == [{"source": "manuals/manual.pdf", "page": 12}]
+    # The page as a reader counts it, the offsets as the reader wrote them: the
+    # one number that is turned round on the way out, and the one that is not.
+    assert rows == [
+        {"source": "manuals/manual.pdf", "page": 12, "ranges": [[120, 148]]}
+    ]
 
 
 def test_a_chunk_without_a_page_or_a_source_still_renders():
     context, rows = format_context([Document(page_content="text", metadata={})])
 
     assert context == "[Source: unknown]\ntext"
-    assert rows == [{"source": "unknown", "page": None}]
+    # Nothing to place a passage with, rather than a range at zero: a box drawn
+    # from an offset nobody wrote would be the first line of the page.
+    assert rows == [{"source": "unknown", "page": None, "ranges": []}]
+
+
+def test_a_chunk_whose_offsets_are_not_a_range_has_none():
+    """An end that does not come after its start is not somewhere to point."""
+    document = Document(
+        page_content="text",
+        metadata={"source": "a.pdf", "page": 0, "start": 40, "end": 40},
+    )
+
+    assert format_context([document])[1] == [
+        {"source": "a.pdf", "page": 1, "ranges": []}
+    ]
+
+
+def test_two_passages_of_one_page_are_one_row_with_both_their_ranges():
+    """What the de-duplication drops is not lost with it.
+
+    One page cited for four passages is one source, which is right; one place to
+    point at on it is not, and the rows it was merged from are where the others
+    are kept.
+    """
+    _, rows = format_context([
+        Document(
+            page_content="The thing is explained here.",
+            metadata={"source": "manuals/manual.pdf", "page": 11, "start": 0, "end": 28},
+        ),
+        Document(
+            page_content="And again, further down.",
+            metadata={"source": "manuals/manual.pdf", "page": 11, "start": 900, "end": 925},
+        ),
+        Document(
+            page_content="On the next page.",
+            metadata={"source": "manuals/manual.pdf", "page": 12, "start": 0, "end": 17},
+        ),
+    ])
+
+    assert unique_sources(rows) == [
+        {"source": "manuals/manual.pdf", "page": 12, "ranges": [[0, 28], [900, 925]]},
+        {"source": "manuals/manual.pdf", "page": 13, "ranges": [[0, 17]]},
+    ]
+
+
+def test_the_same_rows_read_twice_give_the_same_answer():
+    """The rows are the graph's state, which outlives the call that read them.
+
+    Reading a conversation twice is two `GET /api/threads/{id}` over the same
+    rows, and a merge done where they lie would answer the second one with every
+    range on the row twice over.
+    """
+    rows = [
+        {"source": "manuals/manual.pdf", "page": 12, "ranges": [[0, 28]]},
+        {"source": "manuals/manual.pdf", "page": 12, "ranges": [[900, 925]]},
+    ]
+
+    assert unique_sources(rows) == unique_sources(rows) == [
+        {"source": "manuals/manual.pdf", "page": 12, "ranges": [[0, 28], [900, 925]]}
+    ]
 
 
 def test_the_context_opens_with_the_documents_the_search_was_run_over():
@@ -79,7 +145,9 @@ def test_the_context_opens_with_the_documents_the_search_was_run_over():
     )
     # The line is what was searched, not where a passage came from: the sources
     # to cite are still the passages, and nothing else.
-    assert rows == [{"source": "manuals/manual.pdf", "page": 12}]
+    assert rows == [
+        {"source": "manuals/manual.pdf", "page": 12, "ranges": [[120, 148]]}
+    ]
 
 
 def test_a_context_that_was_not_told_a_scope_claims_none():
@@ -248,11 +316,23 @@ async def test_a_scoped_retriever_is_all_a_scoped_answer_takes():
         [
             Document(
                 page_content="The thing is explained here.",
-                metadata={"source": "manuals/manual.pdf", "page": 0, "chunk_id": 0},
+                metadata={
+                    "source": "manuals/manual.pdf",
+                    "page": 0,
+                    "chunk_id": 0,
+                    "start": 0,
+                    "end": 28,
+                },
             ),
             Document(
                 page_content="Something else entirely.",
-                metadata={"source": "reports/report.pdf", "page": 0, "chunk_id": 0},
+                metadata={
+                    "source": "reports/report.pdf",
+                    "page": 0,
+                    "chunk_id": 0,
+                    "start": 0,
+                    "end": 23,
+                },
             ),
         ],
         ["0", "1"],
@@ -267,6 +347,6 @@ async def test_a_scoped_retriever_is_all_a_scoped_answer_takes():
     state = await ask(graph, "what does it say?")
 
     assert state["retrieved_documents"] == [
-        {"source": "manuals/manual.pdf", "page": 1}
+        {"source": "manuals/manual.pdf", "page": 1, "ranges": [[0, 28]]}
     ]
     assert "Something else entirely." not in state["context"]

@@ -133,6 +133,36 @@ def as_source(path: str, documents_dir: Path) -> str:
         return candidate.as_posix()
 
 
+def document_path(source: str, documents_dir: Path) -> Path:
+    """The file a document path names, or a refusal.
+
+    The other half of `as_source` above, and the opposite of it in the one way
+    that matters: a path that leaves the documents folder is refused here instead
+    of being handed back as it was typed. This is where a string from outside the
+    program becomes a file to open, so this is where the folder is enforced.
+
+    The catalog is deliberately no part of the answer. The folder is what decides
+    whether a document is here, and a file sitting in it can be read whether or
+    not a sync has indexed it; asking the catalog would add a database read to
+    every request to answer a question the file already answers.
+    """
+    root = Path(documents_dir).resolve()
+
+    try:
+        # Left of the folder is outside it, and an absolute path replaces the
+        # folder rather than joining it — both end up refused by the line after,
+        # which is the point of resolving before comparing.
+        resolved = (root / source).resolve()
+        resolved.relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Not a document here: {source}") from exc
+
+    if resolved.suffix.lower() != ".pdf" or not resolved.is_file():
+        raise ValueError(f"Not a document here: {source}")
+
+    return resolved
+
+
 def resolve_scope(
     catalog: Catalog,
     *,

@@ -27,16 +27,18 @@ them.
   or a local Chroma, and the app works with either. One line switches between them, and each
   store keeps its own catalog, so switching re-indexes into the new store rather than finding
   every file unchanged. The vectors of the store left behind stay where they are. Which one a
-  corpus should live in is still answered per installation; what is still missing is the
-  catalog recording the embedding model it was built with — see Phase 2.
+  corpus should live in is still answered per installation; the embedding model each document
+  was indexed with is recorded — see Phase 2.
 - **Embedding model.** It defines the vector space the whole corpus lives in, so it is a
   decision at corpus level rather than a preference: changing it means re-indexing
   everything, and two models with the same dimension are still not compatible. Pick a model
   known to work, record it with the index, and treat it as an invariant.
-- **Text coordinates at ingest.** Highlighting a cited passage requires word positions in
-  the page, which `PyPDFLoader` does not provide. Capturing them with PyMuPDF also
-  improves chunking (keeping tables intact, splitting on headings), so it pays twice.
-  Retro-fitting means reprocessing the corpus.
+- **Text coordinates at ingest.** Built. `app/pdf.py` reads with PyMuPDF, and every chunk
+  records the page it came from and the range of characters it covers in that page's text,
+  which is what highlighting a citation needs and what `PyPDFLoader` did not provide. The
+  same reading keeps tables whole and splits on headings, so it paid twice. A chunk indexed
+  by the older reader carries no offsets and reports no range, so it has to be indexed again
+  before anything can be drawn on it.
 - **Deletion semantics.** Hard delete, or a trash state that hides a document from
   retrieval but keeps it recoverable. Costs almost nothing to design in now.
 
@@ -93,12 +95,15 @@ produces wrong results for everything.
 - [x] The vector store as a setting: `VECTOR_STORE=pinecone` for the hosted index, or
       `VECTOR_STORE=chroma` for a folder on this machine, with no account and no network. One
       store interface for both, so nothing above it knows which one is in use.
-- [ ] Record in the catalog which store and which embedding model it was built against, and
-      refuse — or re-index — on a mismatch. Each store keeping its own catalog settles the
-      store half: switching store starts that store's catalog from nothing and re-indexes
-      honestly, and the sync warns when a catalog is pointed at a store holding no vectors.
-      What is still unrecorded is the identity inside one catalog, the embedding model above
-      all — two different models of the same length slip past a check that measures length.
+- [x] Record in the catalog which store and which embedding model it was built against, and
+      re-index on a mismatch. Each store keeping its own catalog settles the store half:
+      switching store starts that store's catalog from nothing and re-indexes honestly, and
+      the sync warns when a catalog is pointed at a store holding no vectors. Inside one
+      catalog the row carries the embedding model and the reader that built its vectors, and
+      a run that would build them differently indexes the document again — so two models of
+      one length no longer pass unnoticed, which a check on the dimension could not catch.
+      What a name on a row cannot catch is a model that no longer answers as it did under
+      that name — see the fingerprint below.
 - [x] Re-index when the store changes rather than refusing. With a catalog per store this
       happens by itself: the new store's catalog is empty, so every file is new to it and the
       run indexes the whole library. The previous store's vectors are left behind, and the
@@ -238,7 +243,8 @@ about them.
       ingest, and a description that can be edited or written by hand. Today nothing but
       `scripts.describe` writes the column and nothing edits it.
 - [ ] Auto-derived tags, document type, language and date.
-- [ ] Structure-aware chunking with PyMuPDF: keep tables whole, split on headings.
+- [x] Structure-aware chunking with PyMuPDF: keep tables whole, split on headings. Each chunk
+      carries the heading it sits under and its level, and says when it is a table.
 - [ ] Duplicate and near-duplicate detection from the embeddings.
 - [ ] OCR pipeline: detect pages with no text layer, run `ocrmypdf` (which keeps
       coordinates, so highlighting works on scanned documents too), and flag low-confidence
@@ -317,7 +323,11 @@ confirmed.
 Working with the document while reading it: highlights, notes and questions anchored to the
 page.
 
-- [ ] Highlight cited passages inside the page.
+- [ ] Highlight cited passages inside the page. The server half is done: a source row carries
+      the ranges of the page the answer was written from, and `GET /api/documents/boxes` turns
+      one into the rectangles to draw on the page. The page half needs a renderer — the
+      browser's own PDF viewer can be jumped to a page but not drawn on — which is a decision
+      of its own and is why the route sends no page size.
 - [ ] Chat anchored to the visible page rather than the whole document.
 - [ ] Selection → ask, translate, annotate.
 - [ ] Notes attached to a page, indexed alongside the documents so they are searchable and

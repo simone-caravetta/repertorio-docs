@@ -28,6 +28,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, Field
 
+from app import pdf
 from app.catalog import Catalog, CategoryBranch, DocumentRecord, build_category_tree
 from app.chat_model import build_chat_model
 from app.config import PROJECT_ROOT, Settings, settings
@@ -38,7 +39,7 @@ from app.rag_graph import (
     turns_from,
     unique_sources,
 )
-from app.scope import Scope, build_scoped_retriever, resolve_scope
+from app.scope import Scope, build_scoped_retriever, document_path, resolve_scope
 
 WEB_DIR = PROJECT_ROOT / "web"
 
@@ -166,6 +167,53 @@ def create_app(
                 "X-Accel-Buffering": "no",
             },
         )
+
+    @app.get("/api/documents/boxes")
+    def boxes_route(source: str, page: int, start: int, end: int) -> dict[str, Any]:
+        """Where a passage sits on its page, as the rectangles to draw it with.
+
+        `page`, `start` and `end` are the passage's own metadata as the sources
+        rows carry it: the page a reader turns to, and the characters it covers
+        in that page's text — the text `app.pdf` builds, and the one the offsets
+        were written against when the document was indexed.
+
+        The catalog is not consulted, here or in the resolver: the documents
+        folder is what says whether a document is here, and a page answers the
+        same way for a file that has never been indexed.
+
+        A plain `def` on purpose. Reading a PDF is blocking work, and FastAPI
+        runs a handler written this way in its threadpool, where the same work
+        inside an `async def` would hold the event loop for as long as it took
+        and stall every other request with it.
+        """
+        # The free checks first: a request naming a range that is not one is
+        # answered without opening a file, let alone reading one.
+        if start < 0 or end <= start:
+            raise HTTPException(
+                status_code=400, detail=f"Not a range: {start}-{end}"
+            )
+
+        try:
+            path = document_path(source, config.documents_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        # One page, not the document: the reader refuses a number the document
+        # does not have, which is what keeps a zero from being read as the last
+        # page — a valid index, and an answer about the wrong page that looks
+        # like any other.
+        try:
+            read = pdf.read_page(path, page)
+        except IndexError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"No page {page} in {source}"
+            ) from exc
+
+        return {
+            "source": source,
+            "page": page,
+            "boxes": pdf.boxes(read, start, end),
+        }
 
     @app.get("/api/threads/{thread_id}")
     async def thread_route(thread_id: str, request: Request) -> dict[str, Any]:

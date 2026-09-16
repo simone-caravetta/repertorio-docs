@@ -114,6 +114,11 @@ def format_context(
     passages are what the search found, which is a sample of what a document
     holds; what the catalog says about it is not a sample, and it is there for
     every document in scope rather than for the ones the search reached.
+
+    Each row says where its passage sits as well as where it came from: the page
+    is what a reader turns to, and the ranges are what a client draws on it. Both
+    are the chunk's own metadata, the page turned round into the number a reader
+    counts and the offsets left as the reader wrote them.
     """
     context_parts: list[str] = []
     source_rows: list[dict[str, Any]] = []
@@ -140,28 +145,66 @@ def format_context(
         source_rows.append({
             "source": source,
             "page": page,
+            "ranges": ranges_in(doc.metadata),
         })
 
     return "\n\n".join(context_parts), source_rows
 
 
+def ranges_in(metadata: Mapping[str, Any]) -> list[list[int]]:
+    """Where in its page's text a passage sits, as one range, or as none.
+
+    A chunk indexed before the reader wrote offsets has neither an offset nor a
+    way to be placed, and says so with an empty list. A range of zeros would be a
+    confident answer to a question that was never asked: the first line of the
+    page, drawn from a passage that may be anywhere on it.
+    """
+    start, end = metadata.get("start"), metadata.get("end")
+
+    if isinstance(start, int) and isinstance(end, int) and end > start:
+        return [[start, end]]
+
+    return []
+
+
 def unique_sources(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """One row per place a passage came from.
+    """One row per place a passage came from, carrying every range found there.
 
     Four chunks of one page are one source, and the first mention is the one
-    kept, so the list reads in the order the passages were found.
+    kept, so the list reads in the order the passages were found. What the rows
+    it drops held is not thrown away with them: their ranges are the other
+    passages of that page, and a page cited four times would otherwise be a page
+    a client can point at once.
     """
     unique: list[dict[str, Any]] = []
-    seen: set[tuple[Any, Any]] = set()
+    at: dict[tuple[Any, Any], dict[str, Any]] = {}
 
     for row in rows:
         key = (row.get("source"), row.get("page"))
-        if key in seen:
+        kept = at.get(key)
+
+        if kept is not None:
+            kept["ranges"] += _as_ranges(row.get("ranges"))
             continue
-        seen.add(key)
-        unique.append(row)
+
+        kept = {**row, "ranges": _as_ranges(row.get("ranges"))}
+        at[key] = kept
+        unique.append(kept)
 
     return unique
+
+
+def _as_ranges(value: Any) -> list[list[int]]:
+    """What a row holds under `ranges`, as a list of its own.
+
+    Copied rather than kept as it is: these rows come out of the graph's state,
+    which outlives the call, so a row merged where it lies would come back to the
+    next read of the same conversation with its own ranges on it twice.
+    """
+    if not isinstance(value, list):
+        return []
+
+    return [list(item) for item in value]
 
 
 def build_graph(

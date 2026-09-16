@@ -116,8 +116,10 @@ def test_a_piece_begins_and_ends_on_a_word(indexed: Path) -> None:
 
 def test_every_piece_has_something_to_draw_on(indexed: Path) -> None:
     """Offsets that survive the round trip through a page number and back."""
+    pages = pdf.read_pages(indexed)
+
     for piece in pdf.pieces(indexed):
-        boxes = pdf.boxes(indexed, piece.page + 1, piece.start, piece.end)
+        boxes = pdf.boxes(pages[piece.page], piece.start, piece.end)
         assert boxes, f"nothing to draw for {piece.text[:40]!r}"
 
 
@@ -351,4 +353,31 @@ def test_a_page_with_no_text_has_nothing_to_read(tmp_path: Path) -> None:
 
 def test_a_range_that_covers_nothing_has_no_boxes(indexed: Path) -> None:
     """Half-open, so an empty range is empty and not the box of the character at it."""
-    assert pdf.boxes(indexed, 1, 4, 4) == []
+    assert pdf.boxes(pdf.read_pages(indexed)[0], 4, 4) == []
+
+
+def test_a_page_read_on_its_own_is_the_page_of_the_document(indexed: Path) -> None:
+    """The offsets index one text, and the two readings of it have to be that one.
+
+    A document is read whole to be indexed and one page of it is read to be drawn
+    on: a chunk's offsets were written against the first, and a rectangle is
+    found with the second. A character of difference between them is a highlight
+    a word out, and nothing in either reading would say so.
+    """
+    pages = pdf.read_pages(indexed)
+
+    for number in range(1, len(pages) + 1):
+        assert pdf.read_page(indexed, number).text == pages[number - 1].text
+
+
+def test_a_page_the_document_does_not_have_is_refused(indexed: Path) -> None:
+    """Counted from one, and read as a number rather than as an index.
+
+    Zero is the case worth naming: it is a valid index into a list of pages, so
+    read as one it answers about the last page of the document.
+    """
+    with pytest.raises(IndexError, match="No page 0"):
+        pdf.read_page(indexed, 0)
+
+    with pytest.raises(IndexError, match="No page 3"):
+        pdf.read_page(indexed, 3)
