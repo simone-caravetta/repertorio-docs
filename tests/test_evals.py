@@ -9,6 +9,7 @@ suite's fake. What is measured against the real documents is measured by running
 from __future__ import annotations
 
 import json
+from math import log2
 from pathlib import Path
 from typing import Any
 
@@ -16,11 +17,13 @@ import pytest
 from langchain_core.documents import Document
 
 from app.evals import (
+    NDCG_CUTOFF,
     EvalReport,
     Question,
     QuestionResult,
     load_questions,
     missing_from,
+    ndcg_at,
     rank_of,
     read_verdict,
     run_evals,
@@ -487,9 +490,12 @@ def test_a_verdict_of_no_keeps_what_follows_it() -> None:
 
 def test_the_numbers_add_up() -> None:
     report = EvalReport(results=[
-        QuestionResult(question=question(id="uno"), rank=1),
-        QuestionResult(question=question(id="due", page=4), rank=3, page_rank=None),
-        QuestionResult(question=question(id="tre"), rank=None),
+        QuestionResult(question=question(id="uno"), rank=1, grades=(1, 0)),
+        QuestionResult(
+            question=question(id="due", page=4), rank=3, page_rank=None,
+            grades=(0, 0, 1),
+        ),
+        QuestionResult(question=question(id="tre"), rank=None, grades=(0,)),
         QuestionResult(question=question(id="fuori", document=None)),
         QuestionResult(question=question(id="saltata"), asked=False),
     ])
@@ -500,12 +506,176 @@ def test_the_numbers_add_up() -> None:
     assert (summary.measurable, summary.hits) == (3, 2)
     assert (summary.page_asked, summary.page_hits) == (1, 0)
     assert summary.reciprocal_rank == pytest.approx((1 + 1 / 3) / 3)
+    # The first found the document first, which is the best order it had: 1.0.
+    # The second found the document and not the page, and put the one passage of
+    # it third — against the ideal, which is that passage first: 1/log2(4). The
+    # third was missed: 0, and it is in the divisor, so a miss pulls the mean down
+    # rather than being left out of it.
+    assert summary.ndcg == pytest.approx((1.0 + 1 / log2(4) + 0.0) / 3)
 
 
 def test_a_run_with_nothing_to_measure_has_no_rank() -> None:
     report = EvalReport(results=[QuestionResult(question=question(id="saltata"), asked=False)])
 
-    assert summarise(report).reciprocal_rank == 0.0
+    summary = summarise(report)
+
+    assert summary.reciprocal_rank == 0.0
+    assert summary.ndcg == 0.0
+
+
+def test_a_failed_search_scores_no_better_than_a_missed_one() -> None:
+    report = EvalReport(results=[
+        QuestionResult(
+            question=question(id="uno"), error="the index is unreachable"
+        ),
+    ])
+
+    assert summarise(report).ndcg == 0.0
+
+
+# --- nDCG ------------------------------------------------------------------
+
+
+def test_the_best_order_the_passages_allowed_scores_one() -> None:
+    assert ndcg_at((2, 1, 0)) == pytest.approx(1.0)
+    assert ndcg_at((1, 0)) == pytest.approx(1.0)
+    assert ndcg_at(()) == 0.0
+
+
+def test_the_right_page_below_a_wrong_one_does_not() -> None:
+    # The page that answers is second, behind a passage of the same document:
+    # 1 at the top and 2 discounted by log2(3), against the other order of the
+    # same two, which is 2 at the top and 1 below it.
+    assert ndcg_at((1, 2)) == pytest.approx(
+        (1 + 2 / log2(3)) / (2 + 1 / log2(3))
+    )
+    assert ndcg_at((1, 2)) < ndcg_at((2, 1))
+
+
+def test_the_same_passage_lower_down_scores_less() -> None:
+    assert ndcg_at((0, 0, 2, 0)) == pytest.approx((2 / log2(4)) / 2)
+    assert ndcg_at((0, 0, 2, 0)) < ndcg_at((2, 0, 0, 0))
+
+
+def test_a_ranking_that_found_nothing_scores_nothing() -> None:
+    """Nothing relevant is an ideal of zero, which is 0 rather than a division."""
+    assert ndcg_at((0, 0, 0)) == 0.0
+    assert ndcg_at(()) == 0.0
+
+
+def test_ordering_is_read_against_what_the_search_returned() -> None:
+    """Right document, wrong page, best order, is 1.0 — and that is deliberate.
+
+    The ideal is the passages that came back, so a search is not punished for
+    what it never retrieved: its ordering was not the problem, and the page rate
+    printed beside it is what says the page was missed.
+    """
+    assert ndcg_at((1, 1, 0)) == pytest.approx(1.0)
+    assert ndcg_at((0, 1, 1)) < 1.0
+
+
+def test_the_numbers_about_finding_are_read_over_what_was_shown() -> None:
+    """A call asks the search for more than the console shows, so that a ranking
+    has ten passages to be read to the end of. The two are not the same number,
+    and a document at position six came back to the harness and never to the
+    reader: counting it as found would report a search the console does not have.
+    """
+    retriever = Retriever({
+        "Prima?": [passage(REPORT, 1) for _ in range(5)] + [passage(MANUAL, 1)]
+    })
+
+    everything = run_evals(
+        [question(question="Prima?")], retriever=retriever, in_scope=[MANUAL, REPORT]
+    )
+    shown = run_evals(
+        [question(question="Prima?")],
+        retriever=retriever,
+        read_at=5,
+        in_scope=[MANUAL, REPORT],
+    )
+
+    assert everything.results[0].rank == 6
+    assert shown.results[0].rank is None
+    # The ordering is still read over the whole of it: what a question scores for
+    # the order of the passages does not depend on how many of them were shown.
+    assert shown.results[0].grades == everything.results[0].grades
+
+
+def test_a_run_with_no_read_at_reads_everything_it_was_given() -> None:
+    """What a whole-document scope needs: its passages are the document, and
+    there is no fifth of it to stop at."""
+    retriever = Retriever({
+        "Prima?": [passage(REPORT, 1) for _ in range(5)] + [passage(MANUAL, 1)]
+    })
+
+    report = run_evals(
+        [question(question="Prima?")], retriever=retriever, in_scope=[MANUAL, REPORT]
+    )
+
+    assert report.results[0].rank == 6
+
+
+def test_a_passage_past_the_cutoff_is_not_read() -> None:
+    """A cutoff that is not read is a cutoff that would flatter a long ranking."""
+    assert ndcg_at((2,), cutoff=1) == pytest.approx(1.0)
+    assert ndcg_at((0, 2), cutoff=1) == 0.0
+    assert ndcg_at((2,), cutoff=0) == 0.0
+
+
+def test_the_cutoff_is_ten_by_default() -> None:
+    """Ten, not five: the console's own k is a different number and not this one."""
+    below = (0,) * (NDCG_CUTOFF - 1) + (2,)
+    past = (0,) * NDCG_CUTOFF + (2,)
+
+    assert NDCG_CUTOFF == 10
+    assert ndcg_at(below) > 0
+    assert ndcg_at(past) == 0.0
+
+
+# --- what the passages are graded by ---------------------------------------
+
+
+def test_a_passage_is_graded_on_the_page_the_question_named() -> None:
+    retriever = Retriever({
+        "Prima?": [
+            passage(REPORT, 0),
+            passage(MANUAL, 3),
+            passage(MANUAL, 1),
+        ]
+    })
+
+    report = run_evals(
+        [question(question="Prima?", page=2)], retriever=retriever
+    )
+
+    # Another document, then the right document on another page, then the page
+    # itself. The middle one is worth something: it is where the answer is not,
+    # inside the document it is in.
+    assert report.results[0].grades == (0, 1, 2)
+
+
+def test_a_question_that_named_no_page_has_one_grade_to_give() -> None:
+    retriever = Retriever({"Prima?": [passage(REPORT, 0), passage(MANUAL, 3)]})
+
+    report = run_evals([question(question="Prima?")], retriever=retriever)
+
+    assert report.results[0].grades == (0, 1)
+
+
+def test_a_search_that_returned_nothing_has_no_grades() -> None:
+    report = run_evals([question(question="Prima?")], retriever=Retriever({}))
+
+    assert report.results[0].grades == ()
+    assert summarise(report).ndcg == 0.0
+
+
+def test_a_question_that_could_not_be_asked_has_no_grades() -> None:
+    report = run_evals(
+        [question(question="Prima?")], retriever=Retriever({}), in_scope=[REPORT]
+    )
+
+    assert report.results[0].asked is False
+    assert report.results[0].grades == ()
 
 
 def test_a_failed_search_is_counted_as_a_failure() -> None:

@@ -405,3 +405,50 @@ def test_the_whole_document_path_is_not_reranked(monkeypatch):
 
     assert [one.page_content for one in found] == ["a"]
     assert store.searches == [("q", 1, {"source": "a.pdf"})]
+
+
+def test_the_cutoff_the_eval_reads_reaches_the_search(monkeypatch):
+    """A metric named @10 over the five the console shows is about what was never
+    retrieved, so the number the caller asks for has to be the one the store
+    hears — on the search branch, which is the only one that has an opinion.
+
+    The store is answered on `app.vectorstore` rather than on `app.scope`: this
+    branch reaches the store through `build_retriever`, which reads the name from
+    its own module, and only the whole-document branch reads `app.scope`'s copy.
+    """
+    from app.evals import NDCG_CUTOFF
+    from app.scope import Scope, build_scoped_retriever
+
+    store = FakeVectorStore()
+    monkeypatch.setattr(
+        vectorstore_module,
+        "settings",
+        make_settings(rerank="off", retrieval_k=5),
+    )
+    monkeypatch.setattr(vectorstore_module, "get_vectorstore", lambda: store)
+
+    build_scoped_retriever(
+        Scope(sources=None, label="whole library", documents=("a.pdf",)),
+        k=NDCG_CUTOFF,
+    ).invoke("q")
+
+    assert store.searches == [("q", NDCG_CUTOFF, None)]
+
+
+def test_a_caller_with_no_opinion_is_asked_for_the_console_s_k(monkeypatch):
+    """Chat and the API pass no `k`, and what they get must not have moved."""
+    from app.scope import Scope, build_scoped_retriever
+
+    store = FakeVectorStore()
+    monkeypatch.setattr(
+        vectorstore_module,
+        "settings",
+        make_settings(rerank="off", retrieval_k=5),
+    )
+    monkeypatch.setattr(vectorstore_module, "get_vectorstore", lambda: store)
+
+    build_scoped_retriever(
+        Scope(sources=None, label="whole library", documents=("a.pdf",))
+    ).invoke("q")
+
+    assert store.searches == [("q", 5, None)]

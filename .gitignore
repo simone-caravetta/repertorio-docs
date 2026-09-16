@@ -25,6 +25,13 @@ data/chroma/
 # uno suo, sui PDF di prova, e non ha bisogno di questo file.
 data/evals/
 
+# La libreria finta su cui si prova la misura del recupero: quaranta documenti
+# generati a gruppi di quattro quasi identici fra loro, le domande scritte su di
+# essi, e il suo store con il suo catalogo. Resta in locale come tutto il resto
+# sotto data/; le istruzioni per ricostruirlo stanno in testa a
+# data/mock/make_library.py.
+data/mock/
+
 # Le conversazioni contengono le domande e le risposte: private quanto i
 # documenti che citano.
 data/conversations*.sqlite3*

@@ -7,9 +7,14 @@ them worth measuring the same way.
 
 A question is written with the document it should be answered from, and that is
 what makes it measurable: the search either returned a passage of that document
-or it did not. Retrieval is measured on its own and from the question as it was
-typed, because that is the input the search is given, and it costs one embedding
-per question and no model call at all. The answer half is asked for: it writes an
+or it did not. Whether it was found is not the whole of it — a passage placed
+tenth and the same passage placed first are the same hit and a different search —
+so the ranking is also read as a ranking, by nDCG over the first `NDCG_CUTOFF`
+passages, which is where a reordering shows up at all. `ndcg_at` says what that
+number is measured against and the one way it departs from a benchmark's.
+Retrieval is measured on its own and from the question as it was typed, because
+that is the input the search is given, and it costs one embedding per question
+and no model call at all. The answer half is asked for: it writes an
 answer from the passages the search returned, with the console's own prompt, and
 reads it against what the question said the answer holds. `judge` adds a model
 that says whether every claim in the answer is one the context supports, which is
@@ -26,6 +31,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from math import log2
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +48,13 @@ from app.rag_graph import answer_prompt, format_context
 # spelled wrong: a set is written by hand, and `contians` would measure nothing
 # and say nothing about it.
 FIELDS = ("id", "question", "document", "page", "contains", "note")
+
+# How far down the returned passages nDCG is read. Ten is the convention the
+# metric is quoted at, and it is a constant here rather than a setting because
+# nothing outside a measurement reads it: the console answers from the top
+# `retrieval_k` and has no opinion about the tenth passage. A run asks the search
+# for at least this many so that the ten exist to be read.
+NDCG_CUTOFF = 10
 
 judge_prompt = ChatPromptTemplate.from_messages([
     (
@@ -112,12 +125,17 @@ class QuestionResult:
     None when the run was not asked to write one, and `faithful` is None when no
     judge read it — which is not the same as a judge that read it and could not
     answer, and `judge_error` is what tells the two apart.
+
+    `grades` is the whole of what nDCG is computed from: how good each returned
+    passage is, in the order it came back, which the two ranks above cannot say
+    because they keep the first position and throw the rest away.
     """
 
     question: Question
     asked: bool = True
     rank: int | None = None
     page_rank: int | None = None
+    grades: tuple[int, ...] = ()
     sources: list[dict[str, Any]] = field(default_factory=list)
     answer: str | None = None
     missing: list[str] = field(default_factory=list)
@@ -141,7 +159,10 @@ class Summary:
     `measurable` is the questions retrieval could be measured on: those that were
     asked, and that named a document to have found. `reciprocal_rank` is the mean
     of `1/rank` over them, which is where a search that finds the right document
-    third rather than first is worse and says so.
+    third rather than first is worse and says so. `ndcg` is the mean of nDCG@10
+    over the same questions, and says something the other two cannot: not whether
+    the right passage was found but how near the top it was put, judged against
+    the best order the passages it did return could have been in.
     """
 
     questions: int
@@ -153,6 +174,7 @@ class Summary:
     page_asked: int
     page_hits: int
     reciprocal_rank: float
+    ndcg: float
     answered: int
     complete: int
     judged: int
@@ -296,6 +318,7 @@ def run_evals(
     questions: Sequence[Question],
     *,
     retriever: BaseRetriever,
+    read_at: int | None = None,
     in_scope: Sequence[str] | None = None,
     descriptions: Mapping[str, str] | None = None,
     chat_model: BaseChatModel | None = None,
@@ -311,6 +334,16 @@ def run_evals(
     it and `descriptions` are handed to `format_context`, because the answer is
     written from what the console would have shown it.
 
+    `read_at` is how many of the returned passages the numbers about *finding*
+    are read over — the rank of the document, the rank of the page, and the two
+    hit counts. It is what the console hands the model, and a call asks for more
+    than that only so that a ranking has ten passages to be read to the end of;
+    without this the four numbers would quietly be about a pool the answer was
+    never written from, and a run would report finding a document it never
+    showed anyone. Left unset, everything returned is read, which is what a
+    whole-document scope needs: its passages are the document, and there is no
+    fifth of it to stop at.
+
     A question that raises does not end the run — a search is a network call, and
     one that fails is one question's result, not the whole measurement.
     """
@@ -325,6 +358,7 @@ def run_evals(
             _run_one(
                 question,
                 retriever=retriever,
+                read_at=read_at,
                 in_scope=in_scope,
                 descriptions=descriptions,
                 chat_model=chat_model,
@@ -346,6 +380,7 @@ def _run_one(
     question: Question,
     *,
     retriever: BaseRetriever,
+    read_at: int | None,
     in_scope: Sequence[str] | None,
     descriptions: Mapping[str, str] | None,
     chat_model: BaseChatModel | None,
@@ -361,21 +396,28 @@ def _run_one(
         passages, in_scope=in_scope, descriptions=descriptions
     )
 
+    # What was found is read over what the answer was written from, not over the
+    # wider pool a ranking is read to the end of. A document at position eight
+    # was returned to the harness and never to the reader, and counting it as
+    # found would report a search the console does not have.
+    shown = passages if read_at is None else passages[:read_at]
+
     # Two readings of one ranking: where the document was found, and where it was
     # found on the page the question named. The second is not a refinement of the
     # first — a search can return the document and never the page — but a question
     # that named no page has nothing to narrow to, and says so with None rather
     # than by reporting the document's rank twice.
-    found = rank_of(passages, question.document)
+    found = rank_of(shown, question.document)
 
     result = QuestionResult(
         question=question,
         rank=found,
         page_rank=(
-            rank_of(passages, question.document, page=question.page)
+            rank_of(shown, question.document, page=question.page)
             if question.page is not None
             else None
         ),
+        grades=tuple(_grade(passage, question) for passage in passages),
         sources=sources,
     )
 
@@ -438,6 +480,79 @@ def page_of(passage: Document) -> int | None:
     page = whole_number(passage.metadata.get("page"))
 
     return None if page is None else page + 1
+
+
+def _grade(passage: Document, question: Question) -> int:
+    """How good a passage is for a question, on the scale nDCG reads.
+
+    Two levels are available, and the question decides which: the document the
+    answer should come from, and the page of it that answers. A question that
+    named the page wants a passage of that page above all and a passage of the
+    document above the rest, which is 2 and 1. A question that named only the
+    document has one thing to say about a passage — whether it is from there —
+    and what it means is 1, because a second level that nothing asked for would
+    make the two kinds of question incomparable.
+
+    A question with no document grades everything 0, which is not a ranking
+    problem: retrieval is not measured on it at all, and this only keeps the
+    grades the same length as the passages.
+    """
+    if question.document is None:
+        return 0
+
+    if passage.metadata.get("source") != question.document:
+        return 0
+
+    if question.page is None:
+        return 1
+
+    return 2 if page_of(passage) == question.page else 1
+
+
+def ndcg_at(grades: Sequence[int], *, cutoff: int = NDCG_CUTOFF) -> float:
+    """How well ordered the passages that came back are, over the first `cutoff`.
+
+    Each passage is worth its grade discounted by how far down it was found, and
+    the total is read against the same total for the best order those passages
+    could have been in — the grades it has, highest first. So 1.0 is a ranking
+    that put the best of what it found as high as it could have, and anything
+    lower is a ranking that buried it under something worse.
+
+    **The ideal is the one the returned passages allow, and that is a departure
+    worth naming.** The textbook ideal runs over every relevant passage in the
+    collection; here a question names one document and at most one page, and how
+    many other passages of it there are is not something a question set knows. An
+    ideal of a single perfect passage — the obvious substitute — is not a bound
+    at all: every chunk of the answering page is the answering page, so a search
+    that returns five of them and no junk scores five times what one of them
+    would, and nDCG@10 comes out above 1 and means nothing.
+
+    What that costs is stated where it shows: a search that came back with the
+    right document and never the right page, in the best order it could manage,
+    scores 1.0 — its ordering was not the problem. Whether the page was found is
+    what the page rate is for, and the report prints the two on one line so they
+    are read together.
+
+    A ranking with nothing relevant in it has an ideal of 0 as well, and scores 0
+    rather than dividing by it. A cutoff of zero reads nothing, which is also 0.
+    """
+    if cutoff <= 0:
+        return 0.0
+
+    read = list(grades[:cutoff])
+    ideal = sum(
+        grade / log2(position + 1)
+        for position, grade in enumerate(sorted(read, reverse=True), start=1)
+    )
+    if ideal <= 0:
+        return 0.0
+
+    gained = sum(
+        grade / log2(position + 1)
+        for position, grade in enumerate(read, start=1)
+    )
+
+    return gained / ideal
 
 
 def missing_from(answer: str, expected: Sequence[str]) -> list[str]:
@@ -527,6 +642,15 @@ def summarise(report: EvalReport) -> Summary:
         page_hits=len([r for r in paged if r.page_rank is not None]),
         reciprocal_rank=(
             sum(1 / rank for rank in found) / len(measurable) if measurable else 0.0
+        ),
+        # Over `measurable` rather than over the questions with grades to read: a
+        # question the search failed on has no grades, and dropping it would let
+        # a run that broke score better than one that answered badly. Its nDCG is
+        # 0 through `ndcg_at`, which is what a miss is worth.
+        ndcg=(
+            sum(ndcg_at(result.grades) for result in measurable) / len(measurable)
+            if measurable
+            else 0.0
         ),
         answered=len(answers),
         complete=len([result for result in answers if not result.missing]),

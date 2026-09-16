@@ -267,27 +267,57 @@ doubles as the tool that tells whether a local model is good enough for a given 
       answer faithfulness. `python -m scripts.eval` reads a JSON set — the document each answer
       should come from, and optionally the page and what a correct answer says — and measures
       the search from the question as typed, through the console's own retriever: no model call,
-      and the numbers are document hit-rate, page hit-rate and mean reciprocal rank. `--answers`
+      and the numbers are document hit-rate, page hit-rate, mean reciprocal rank and nDCG@10.
+      The first three say whether the right passage came back and where the document was found;
+      the last is the only one that says anything about the order of everything else that came
+      with it, which is what a reordering changes. A ranking is read against the best order the
+      passages it returned could have been in, because a question names one document and at most
+      one page and a set has no way to know how many other passages of it exist; the consequence
+      is written where it shows, in `app.evals.ndcg_at`. The run asks the search for ten
+      passages so that there are ten to read, and the first `RETRIEVAL_K` of those are what the
+      other numbers were always computed over. A whole-document scope is handed over in reading
+      order and reports no nDCG — there is no ranking to read. `--answers`
       writes an answer to each question from the passages the search returned, using the
       console's own prompt, and checks it against the text the set expected; `--judge` adds a
       model that reads each answer against its context for the faithfulness number. The set is
       a file of private questions about private documents, so it lives in `data/evals/`.
+      Questions about the real library are almost all at rank 1 — it is one book about one
+      subject, and the search puts the right page first for nearly anything asked about it —
+      so a second set was written against a generated corpus built to be hard in the one place
+      this embedding model is weak: ten subjects with four near-identical documents each,
+      differing only in a condition stated in the text, and questions that describe that
+      condition in everyday words rather than in the document's own. It is a local instrument
+      like the real set, not part of the repository, and it is what made the reranker
+      measurable at all. The baseline over it is 47/50 documents, 47/50 pages, MRR 0.78,
+      nDCG@10 0.77, identical over five runs and with 16 of the 50 questions off rank 1 — a
+      baseline a retrieval change can be measured against, which the real library cannot give.
+      Its difficulty is concentrated rather than spread, and that is worth knowing before
+      trusting it as a general instrument: all eight documents stating the closed-garage
+      condition land off rank 1, while the other three conditions together miss 7 of 28.
+      Extending it means finding a second condition this model separates as badly, and the
+      margins between a document and its three siblings are where to look for one.
 - [ ] Tracing (Langfuse) to inspect prompts, tokens and latency per node.
 - [x] Reranking with `bge-reranker-v2-m3` after retrieval — no index change required. The
       search is asked for `RERANK_CANDIDATES` (20) passages, a cross-encoder scores each
       against the question, and the best `RETRIEVAL_K` are what the answer is written from. It
       is a retriever wrapping a retriever, so nothing downstream — the graph, both commands,
-      the web app, the eval harness — knows it is there, and nothing is re-indexed. Measured
-      against the harness and **off by default**, which is the finding rather than a
-      compromise: on the library this was built against the search already returns the right
-      page first for every question there is, so the two runs are identical — 11/11 documents,
-      11/11 pages, MRR 1.00 with `RERANK=on` and with `RERANK=off`. Reranking can only reorder
-      what the search found, and there is nothing to reorder. What it costs is measured too:
-      about 7 seconds added per question on CPU with six cores busy, plus a 2 GB checkpoint on
-      a fresh clone. `RERANK=on` is one variable, `python -m scripts.eval` and `scripts.chat`
-      both print which pass they ran, and what would settle it is a question set with headroom
-      — questions this library gets wrong. The thirteen written while probing for one landed at
-      rank 1 except a single question at rank 2, which is the shape of the problem.
+      the web app, the eval harness — knows it is there, and nothing is re-indexed. Measured,
+      and **off by default** — but the reason has changed, and that is the finding. On the real
+      library the search already returns the right page first for every question there is, so
+      the two runs were identical: 11/11 documents, 11/11 pages, MRR 1.00 with `RERANK=on` and
+      with `RERANK=off`. Reranking can only reorder what the search found, and there was
+      nothing to reorder. On the harder corpus described above it does what it is for: the
+      plain search answers 47/50 documents, 47/50 pages, MRR 0.78, nDCG@10 0.77, and reranked
+      48/50, 48/50, MRR 0.89, nDCG@10 0.85 — 17 of the 50 questions at a different rank, and
+      the ten control questions, asked in the document's own words, at rank 1 in both. Five
+      runs of the plain pass and three of the reranked one each came out identical line for
+      line, so the corpus moves for a reason rather than from ties. It is
+      not a free win: two documents the plain search had found fell out of the top five while
+      three it had missed came in, so the hit rate barely moves while the ordering improves. A
+      reordering cannot add what was never retrieved, which is what the item below is for. What
+      it costs is measured too: about 7 seconds added per question on CPU with six cores busy,
+      plus a 2 GB checkpoint on a fresh clone. `RERANK=on` is one variable, and
+      `python -m scripts.eval` and `scripts.chat` both print which pass they ran.
 - [ ] Hybrid search using the sparse weights BGE-M3 already produces, for codes, names and
       numbers where dense retrieval is weak.
 - [ ] Relevance grading node with a conditional edge: rewrite the query and retry, or state

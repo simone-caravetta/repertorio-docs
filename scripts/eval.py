@@ -24,6 +24,7 @@ from app.catalog import Catalog
 from app.chat_model import build_chat_model
 from app.config import describe_vector_store, settings, short_path
 from app.evals import (
+    NDCG_CUTOFF,
     EvalReport,
     QuestionResult,
     load_questions,
@@ -96,18 +97,42 @@ def evaluate(
 
     report = run_evals(
         questions,
-        retriever=build_scoped_retriever(scope),
+        # The search is asked for the wider of the console's k and the cutoff the
+        # ranking is read to. Asking for five and reporting nDCG@10 would be a
+        # number about passages that were never retrieved; asking for ten and
+        # reporting the hit-rate over five is the same measurement it always was,
+        # because the first five of ten are the five of five. A whole-document
+        # scope ignores this — what it returns is the document, not a count of
+        # passages from it.
+        retriever=build_scoped_retriever(
+            scope, k=max(config.retrieval_k, NDCG_CUTOFF)
+        ),
+        # ... and what was *found* is read over the console's own five, because
+        # that is what the answer is written from. Asking the search for ten is a
+        # measurement instrument reaching wider than the console so that a
+        # ranking has an end to be read to; letting the four numbers about
+        # finding something be read over that wider pool would report documents
+        # found and never shown. A whole-document scope is read whole: its
+        # passages are the document, and there is no fifth of it to stop at.
+        read_at=config.retrieval_k if scope.ranked else None,
         in_scope=scope.documents,
         descriptions=dict(scope.descriptions),
         chat_model=model,
         judge_model=(judge_model or model) if judge else None,
     )
 
-    print_report(report)
+    print_report(report, ranked=scope.ranked)
     return report
 
 
-def print_report(report: EvalReport) -> None:
+def print_report(report: EvalReport, *, ranked: bool = True) -> None:
+    """What the run found, question by question and then added up.
+
+    `ranked` says whether the passages came back as a ranking. A whole-document
+    scope hands over the document in reading order, so a number about where in a
+    ranking the answer sat means nothing for it and is left out rather than
+    printed as a figure that looks like the others.
+    """
     summary = summarise(report)
 
     for result in report.results:
@@ -123,7 +148,10 @@ def print_report(report: EvalReport) -> None:
         said = f"{_rate(summary.hits, summary.measurable)} documents"
         if summary.page_asked:
             said += f", {_rate(summary.page_hits, summary.page_asked)} pages"
-        print(f"retrieval {said}, MRR {summary.reciprocal_rank:.2f}")
+        said += f", MRR {summary.reciprocal_rank:.2f}"
+        if ranked:
+            said += f", nDCG@{NDCG_CUTOFF} {summary.ndcg:.2f}"
+        print(f"retrieval {said}")
     if summary.answered:
         print(
             f"answers   {summary.answered} written, "

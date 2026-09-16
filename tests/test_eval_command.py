@@ -19,8 +19,9 @@ import pytest
 
 import app.rerank as rerank_module
 from app.config import Settings
-from app.evals import EvalReport, Question, QuestionResult
+from app.evals import NDCG_CUTOFF, EvalReport, Question, QuestionResult, run_evals
 from app.lifecycle import sync_documents
+from app.scope import build_scoped_retriever
 from scripts.eval import evaluate, main, parse_args, print_report
 from tests.helpers import (
     EMBEDDING_MODEL,
@@ -63,6 +64,14 @@ def library(
     machine's own `.env`, and a clone that has never reranked would download two
     gigabytes to run a test about a report. The double keeps the order the search
     found, which leaves the ranks these tests assert on the search's own.
+
+    `app.scope` is patched as well as `app.vectorstore`, and the reason is the one
+    the `configured` fixture gives for doing the same with settings: this module
+    imported the name rather than the module, so a store answered on one is not
+    the store seen through the other's copy. A whole-document scope builds its
+    retriever from `app.scope`'s copy, and without this it read the machine's own
+    store — a run of the whole-document path over the real library, quietly, in a
+    test whose whole point is that it touches nothing.
     """
     store = FakeVectorStore()
     sync_documents(
@@ -73,6 +82,7 @@ def library(
         **CHUNKING,  # type: ignore[arg-type]
     )
     monkeypatch.setattr("app.vectorstore.get_vectorstore", lambda: store)
+    monkeypatch.setattr("app.scope.get_vectorstore", lambda: store)
     monkeypatch.setattr(rerank_module, "get_reranker", lambda config: FakeReranker())
 
     return store
@@ -270,6 +280,132 @@ def test_the_header_says_when_nothing_was_reranked(
     assert "rerank    off" in capsys.readouterr().out
 
 
+def test_a_document_read_whole_is_measured_without_a_ranking(
+    library: FakeVectorStore,
+    documents_dir: Path,
+    db_path: Path,
+    question_set: Path,
+    capsys: pytest.CaptureFixture,
+    configured: Callable[..., Settings],
+) -> None:
+    """End to end, because the flag is the command's to pass and not the report's."""
+    configured(rerank="off", retrieval_k=5)
+
+    report = evaluate(
+        questions_path=question_set,
+        documents_dir=documents_dir,
+        db_path=db_path,
+        document=MANUAL,
+    )
+
+    printed = capsys.readouterr().out
+
+    assert "whole," in printed
+    assert report.results[0].error is None
+    assert report.results[0].rank == 1
+    assert "MRR 1.00" in printed
+    assert "nDCG" not in printed
+
+
+def test_the_search_is_asked_for_the_cutoff_the_ranking_is_read_to(
+    library: FakeVectorStore,
+    documents_dir: Path,
+    db_path: Path,
+    question_set: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured: Callable[..., Settings],
+) -> None:
+    """Five passages and an nDCG@10 is a number about what was never retrieved.
+
+    The other direction matters too: a console configured to show twenty is not
+    narrowed to ten to suit the metric, because the counts and the MRR are still
+    read over what the console would have answered from.
+    """
+    asked: list[int | None] = []
+    build = build_scoped_retriever
+
+    def watched(scope: object, **kwargs: object) -> object:
+        asked.append(kwargs.get("k"))  # type: ignore[arg-type]
+        return build(scope)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("scripts.eval.build_scoped_retriever", watched)
+
+    for console_k in (5, NDCG_CUTOFF * 2):
+        configured(rerank="off", retrieval_k=console_k)
+        evaluate(
+            questions_path=question_set, documents_dir=documents_dir, db_path=db_path
+        )
+
+    assert asked == [NDCG_CUTOFF, NDCG_CUTOFF * 2]
+
+
+def test_what_was_found_is_read_over_what_the_console_shows(
+    library: FakeVectorStore,
+    documents_dir: Path,
+    db_path: Path,
+    question_set: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured: Callable[..., Settings],
+) -> None:
+    """The other half of asking for ten: the four numbers about finding something
+    are read over the console's own five.
+
+    Reading them over the wider pool the search was asked for would count a
+    document at position eight as found — returned to the harness, never to the
+    reader, and not in the answer the run wrote. Which is the number moving
+    silently: a whole-document scope is read whole, so its scope says `None`.
+    """
+    read: list[int | None] = []
+    real = run_evals
+    called: list[object] = []
+
+    def watched(questions: object, **kwargs: object) -> object:
+        read.append(kwargs.get("read_at"))  # type: ignore[arg-type]
+        called.append(questions)
+        return real(questions, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("scripts.eval.run_evals", watched)
+
+    for console_k in (5, NDCG_CUTOFF * 2):
+        configured(rerank="off", retrieval_k=console_k)
+        evaluate(
+            questions_path=question_set, documents_dir=documents_dir, db_path=db_path
+        )
+
+    assert read == [5, NDCG_CUTOFF * 2]
+    assert len(called) == 2
+
+
+def test_a_document_read_whole_is_read_whole_by_the_numbers_too(
+    library: FakeVectorStore,
+    documents_dir: Path,
+    db_path: Path,
+    question_set: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured: Callable[..., Settings],
+) -> None:
+    """A whole-document scope has no fifth of it to stop at: its passages are the
+    document, and the page the question named can be past the console's k."""
+    read: list[int | None] = []
+    real = run_evals
+
+    def watched(questions: object, **kwargs: object) -> object:
+        read.append(kwargs.get("read_at"))  # type: ignore[arg-type]
+        return real(questions, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("scripts.eval.run_evals", watched)
+    configured(rerank="off", retrieval_k=5)
+
+    evaluate(
+        questions_path=question_set,
+        document=MANUAL,
+        documents_dir=documents_dir,
+        db_path=db_path,
+    )
+
+    assert read == [None]
+
+
 def test_a_question_set_that_cannot_be_read_is_a_message(
     library: FakeVectorStore, documents_dir: Path, db_path: Path, tmp_path: Path
 ) -> None:
@@ -305,6 +441,7 @@ def test_the_report_says_what_was_found(capsys: pytest.CaptureFixture) -> None:
                 ),
                 rank=2,
                 page_rank=None,
+                grades=(1, 0, 0, 0, 2, 0),
                 answer="Two years, and it renews.",
                 missing=["24 months"],
                 faithful=False,
@@ -313,6 +450,7 @@ def test_the_report_says_what_was_found(capsys: pytest.CaptureFixture) -> None:
             QuestionResult(
                 question=Question(id="prezzi", question="Quanto costa?", document=MANUAL),
                 rank=None,
+                grades=(0, 0),
             ),
             QuestionResult(
                 question=Question(id="fuori", question="Chi ha vinto?"), asked=False
@@ -326,9 +464,40 @@ def test_the_report_says_what_was_found(capsys: pytest.CaptureFixture) -> None:
     assert "prezzi                   miss" in printed
     assert "fuori                    not in scope" in printed
     assert "3 questions, 2 asked, 1 not in scope" in printed
-    assert "retrieval 1/2 (50%) documents, 0/1 (0%) pages, MRR 0.25" in printed
+    assert (
+        "retrieval 1/2 (50%) documents, 0/1 (0%) pages, MRR 0.25, nDCG@10 0.34"
+        in printed
+    )
     assert "answers   1 written, 0 as expected, 1 missing text" in printed
     assert "judge     1 read, 0 faithful, 0 not answered" in printed
+
+
+def test_a_whole_document_scope_reports_no_ranking(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """The passages come back in reading order, so there is no ranking to read.
+
+    What the other numbers say about such a scope still stands — the document is
+    either among the passages or it is not — and only the one that is about order
+    is left out.
+    """
+    print_report(
+        EvalReport(results=[
+            QuestionResult(
+                question=Question(
+                    id="garanzia", question="Quanti anni?", document=MANUAL
+                ),
+                rank=1,
+                grades=(1,),
+            ),
+        ]),
+        ranked=False,
+    )
+
+    printed = capsys.readouterr().out
+
+    assert "MRR 1.00" in printed
+    assert "nDCG" not in printed
 
 
 def test_a_report_with_nothing_measured_says_so_and_no_more(

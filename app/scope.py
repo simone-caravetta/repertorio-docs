@@ -47,6 +47,19 @@ class Scope:
     whole_document: bool = False
     chunks: int | None = None
 
+    @property
+    def ranked(self) -> bool:
+        """Whether a question of this scope comes back as a ranking.
+
+        A document small enough to be read whole is handed over in reading order:
+        it is all of it, and the order it is written in is the only order it has.
+        A measure of where in a ranking something was found has nothing to say
+        about a scope like that, and the commands that print one ask this rather
+        than working the condition out again and disagreeing with this module.
+        Everything else is the similarity search, which is a ranking.
+        """
+        return not (self.whole_document and self.sources and self.chunks)
+
 
 def whole_library(catalog: Catalog, *, config: Settings) -> Scope:
     """Everything indexed, which is what a question without a scope searches.
@@ -215,7 +228,7 @@ def resolve_scope(
     return whole_library(catalog, config=config)
 
 
-def build_scoped_retriever(scope: Scope) -> BaseRetriever:
+def build_scoped_retriever(scope: Scope, *, k: int | None = None) -> BaseRetriever:
     """The retriever these documents are searched through.
 
     A document small enough to be read whole goes through the whole-document
@@ -232,15 +245,21 @@ def build_scoped_retriever(scope: Scope) -> BaseRetriever:
     question can reach a passage the top k would never have ranked, and putting a
     ranking back on top of it would drop exactly those. `RERANK=on` is not uniform
     across scopes — see `app/rerank.py`.
+
+    `k` is how many passages the search is asked for, and only the search has an
+    opinion about it: the whole-document path ignores it, because what it returns
+    is the document rather than a number of passages from it. Left unset it is
+    whatever the console is configured for, which is what every caller but one
+    wants.
     """
-    if scope.whole_document and scope.sources and scope.chunks:
+    if not scope.ranked:
         return WholeDocumentRetriever(
             store=get_vectorstore(),
             source=scope.sources[0],
             k=scope.chunks,
         )
 
-    return build_retriever(sources=scope.sources)
+    return build_retriever(sources=scope.sources, k=k)
 
 
 def _category_scope(catalog: Catalog, name: str | None, *, config: Settings) -> Scope:

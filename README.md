@@ -291,12 +291,26 @@ python -m scripts.eval --judge                    # ... and check each one again
 ```
 
 The search is measured from the question as typed, through the same retriever the console uses,
-and reports how often the expected document came back, how often the expected page did, and the
-mean reciprocal rank. It costs no model call. `--answers` writes an answer from the passages
-that search returned, with the console's own prompt, so a question the search missed cannot be
-rescued by a good answer — it was one search, and what it found is what the answer was written
-from. `--judge` adds a second call per question, to a model that reads the answer against its
-context and says whether every claim in it is supported, which is the faithfulness number.
+and reports four numbers. How often the expected document came back, and how often the expected
+page did, are counts: a passage found first and the same passage found fifth both count once. The
+mean reciprocal rank is where the document was found, and nDCG@10 is where everything that came
+back was ordered, so that a change which moves a passage up the list shows up even when nothing
+was gained or lost. A ranking is read against the best order the passages it returned could have
+been in, which is not the ideal a benchmark would use — a question here names one document and at
+most one page, and a set cannot know how many other passages of it exist. It costs no model call.
+
+The first three numbers are read over the first `RETRIEVAL_K` passages, which is what the console
+would have answered from. nDCG@10 is read over the first ten, so a run asks the search for ten
+and reports both readings of that one search: a document at position eight was returned to the
+harness and never to a reader, and counting it as found would report a search the console does
+not have. A scope that is one small document is read whole and reports no nDCG — there is no
+ranking to read.
+
+`--answers` writes an answer from the passages that search returned, with the console's own
+prompt, so a question the search missed cannot be rescued by a good answer — it was one search,
+and what it found is what the answer was written from. `--judge` adds a second call per question,
+to a model that reads the answer against its context and says whether every claim in it is
+supported, which is the faithfulness number.
 
 The set is a file of your own questions about your own documents: the default path is
 `data/evals/questions.json`, kept out of the repository for the same reason the documents are.
@@ -324,13 +338,23 @@ reports are not comparable unless the line says which pass produced them. A scop
 small document is read whole and never reranked — the reason it is read whole is to reach
 passages no ranking would surface.
 
-It is off by default because it was measured and it bought nothing. On the library this was
-built against the search already put the right page first for every question asked, so
-reranking reordered nothing: the eval reported 11/11 documents, 11/11 pages and MRR 1.00 with
-`RERANK=on` and with `RERANK=off` alike. What it costs is not nothing: about seven seconds per
-question on a CPU, with six cores busy, and a two-gigabyte checkpoint on a clone that has never
-reranked. Turn it on when a question set shows the search losing an answer it should have
-found — that is the case it is for.
+It is off by default because on the library this project was built against it bought nothing.
+That library is one book about one subject, and the search already put the right page first for
+every question asked, so there was nothing to reorder: the eval reported 11/11 documents, 11/11
+pages and MRR 1.00 with `RERANK=on` and with `RERANK=off` alike. A search that is never wrong
+cannot show an improvement, so a second corpus was built to measure against — ten subjects with
+four near-identical documents each, differing in one condition the document states, and
+questions that describe that condition in everyday words. On it the reranker reorders and it
+helps: MRR 0.78 → 0.89 and nDCG@10 0.77 → 0.85, with 17 of the 50 questions landing at a
+different rank. Five runs of the plain pass and three of the reranked one each came out
+identical line for line, so the corpus moves for a reason and not from ties. It is not a free
+win, and the two directions tell the story: two documents the
+plain search had found dropped out of the top five while three it had missed came in, so the
+hit rate barely moves — 47/50 against 48/50 — while the ranking improves. A reordering cannot
+add what was never retrieved. What it costs is not nothing: about seven seconds per question on a
+CPU, with six cores busy, and a two-gigabyte checkpoint on a clone that has never reranked.
+Turn it on when a question set shows the search losing an answer it should have found — that is
+the case it is for.
 
 ## Development
 
