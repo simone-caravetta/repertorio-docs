@@ -1,4 +1,8 @@
-"""The index is created at the measured dimension, or refused with a reason."""
+"""The store the project opens, and the retrievers built over it.
+
+Which backend is used, the dimension the index is created at, and how a
+scope turns into a filter on the search.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ from tests.helpers import FakeVectorStore, as_a_store_returns, make_settings
 
 
 def _flat_vectors(dimension: int = 8):
-    """An embedding function that returns fixed-length vectors, off the network."""
+    """Embeddings that return the same vector for every text."""
     from langchain_core.embeddings import Embeddings
 
     class Flat(Embeddings):
@@ -33,7 +37,11 @@ class FakeIndexDescription:
 
 
 class FakePinecone:
-    """Records what it was asked to create, and reports what is already there."""
+    """A Pinecone client that keeps the indexes it was asked to create.
+
+    An existing dimension of None stands for an account with no index of
+    that name, which is where a new index is wanted.
+    """
 
     def __init__(self, existing_dimension: int | None = None) -> None:
         self.existing_dimension = existing_dimension
@@ -51,14 +59,13 @@ class FakePinecone:
 
 @pytest.fixture(autouse=True)
 def clean_caches():
-    """The dimension, the store, the retriever and the model are cached per
-    process; tests need them fresh.
+    """Clear the caches the store module keeps for the process.
 
-    `get_vectorstore` especially: a test that builds one would otherwise leave it
-    cached for the next, which would then be asserting about a store it did not
-    ask for. `get_reranker` is a cache of the same kind, and a stale one would
-    keep a test on a model the case after it turned off.
+    The dimension, the store, the retriever and the reranker are each built
+    once and kept. A test that replaces the settings has to start from an
+    empty cache, and so does the test after it.
     """
+
     for cached in (
         vectorstore_module.get_embedding_dimension,
         vectorstore_module.get_vectorstore,
@@ -133,7 +140,7 @@ def test_a_different_dimension_stops_before_anything_is_written(monkeypatch):
 
 
 def test_the_configured_store_is_the_one_that_is_built(monkeypatch, tmp_path):
-    """VECTOR_STORE=chroma must not reach for Pinecone at all."""
+    """The backend the settings name is the one that gets built."""
     from app.chroma_store import ChromaStore
 
     monkeypatch.setattr(
@@ -166,7 +173,7 @@ def test_an_unknown_store_is_refused_and_the_known_ones_are_listed(monkeypatch):
 
 
 def chunk(source: str, page: int, index: int) -> Document:
-    """A chunk as ingestion writes them: the source, the page, the position on it."""
+    """One chunk of a document, named by its page and its place on it."""
     return Document(
         page_content=f"{source} p{page} c{index}",
         metadata={"source": source, "page": page, "chunk_id": index},
@@ -174,14 +181,14 @@ def chunk(source: str, page: int, index: int) -> Document:
 
 
 def holding(*chunks: Document) -> FakeVectorStore:
-    """A store already holding these chunks, as an earlier sync left it."""
+    """A store holding the chunks given, in the order they were given."""
     store = FakeVectorStore()
     store.added.append((list(chunks), [str(n) for n in range(len(chunks))]))
     return store
 
 
 def wired(monkeypatch, store: FakeVectorStore, **settings: object) -> FakeVectorStore:
-    """Point the module at a fake store and at settings a test can predict."""
+    """Point the store module at the fake, with the settings given."""
     monkeypatch.setattr(vectorstore_module, "settings", make_settings(**settings))
     monkeypatch.setattr(vectorstore_module, "get_vectorstore", lambda: store)
     return store
@@ -198,7 +205,8 @@ def test_k_is_what_the_caller_asked_for(monkeypatch):
 
 
 def test_a_question_with_no_scope_reads_the_whole_library(monkeypatch):
-    """No filter at all, which is what every command did before scopes."""
+    """With no sources the search runs without a filter."""
+
     wired(
         monkeypatch,
         holding(chunk("manuals/a.pdf", 0, 0), chunk("reports/b.pdf", 0, 0)),
@@ -215,7 +223,8 @@ def test_a_question_with_no_scope_reads_the_whole_library(monkeypatch):
 
 
 def test_a_scope_becomes_one_filter_over_the_sources(monkeypatch):
-    """One shape, and it is the shape both stores answer."""
+    """A scope becomes a single $in filter over the sources."""
+
     store = wired(
         monkeypatch,
         holding(chunk("manuals/a.pdf", 0, 0), chunk("reports/b.pdf", 0, 0)),
@@ -231,13 +240,12 @@ def test_a_scope_becomes_one_filter_over_the_sources(monkeypatch):
 
 
 def test_a_scope_that_names_no_document_searches_nothing(monkeypatch):
-    """Not the same as no scope: an empty selection must not read the library.
+    """A scope naming no document is still a scope, and searches nothing.
 
-    `None` means everything and `[]` means nothing, and the difference is the
-    whole reason the filter is built from a list rather than from a truthiness
-    check. A scope never reaches here empty — it is refused when it is resolved —
-    so this guards the shape, not a path.
+    The filter matches nothing at all. Without a filter the search would
+    run over the whole library.
     """
+
     store = wired(monkeypatch, holding(chunk("manuals/a.pdf", 0, 0)))
 
     retriever = vectorstore_module.build_retriever(sources=[])
@@ -263,8 +271,12 @@ def test_a_document_is_read_through_its_own_chunks(monkeypatch):
 
 
 def test_a_whole_document_comes_back_in_reading_order(monkeypatch):
-    """A similarity search ranks by the question, so it hands back a shuffled
-    document; a document handed over as a pile of pages reads as one."""
+    """The chunks of a whole document come back in reading order.
+
+    The store hands them over in an arbitrary order here, and the retriever
+    sorts them by page and then by place within the page.
+    """
+
     store = wired(
         monkeypatch,
         holding(
@@ -282,12 +294,12 @@ def test_a_whole_document_comes_back_in_reading_order(monkeypatch):
 
 
 def test_a_whole_document_comes_back_in_reading_order_from_a_store(monkeypatch):
-    """The order is read off numbers the store gives back as floats.
+    """The same order holds for metadata that has been through a store.
 
-    Read as a chunk with no page, every chunk of the real library sorts as the
-    first one, and the order the search handed them in is the order they stay
-    in — which is a similarity ranking, the very thing this sort is here to undo.
+    The page and the chunk position come back as floats here, the way a
+    store that keeps its metadata outside the process returns them.
     """
+
     store = wired(
         monkeypatch,
         holding(
@@ -305,7 +317,8 @@ def test_a_whole_document_comes_back_in_reading_order_from_a_store(monkeypatch):
 
 
 def test_a_whole_document_is_asked_for_in_full(monkeypatch):
-    """`k` is the chunk count the catalog holds, so nothing is left behind."""
+    """A whole document is asked for with a k that reaches every chunk."""
+
     store = wired(
         monkeypatch,
         holding(*(chunk("manuals/a.pdf", 0, n) for n in range(12))),

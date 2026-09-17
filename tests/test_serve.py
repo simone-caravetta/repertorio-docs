@@ -1,8 +1,8 @@
-"""The server's command line: the flags, and what they replace.
+"""The command line of the server.
 
-The application itself is tested in `tests/test_api.py`. What is left here is the
-reading of a command line, which is the whole of what this script does before it
-hands over to uvicorn.
+The script takes two paths from its flags and leaves everything else to the
+environment. The tests cover the defaults, what a flag replaces, and the
+errors the argument parser raises on its own.
 """
 
 from __future__ import annotations
@@ -21,10 +21,10 @@ from scripts.serve import config_for, parse_args
 
 @pytest.fixture
 def argv(monkeypatch: pytest.MonkeyPatch) -> Callable[..., argparse.Namespace]:
-    """`parse_args`, over the flags a shell would have handed it.
+    """A parser for a command line written out in the test.
 
-    The scripts read `sys.argv` and take no argument, the way a command line
-    should, so the flags are put there rather than passed in.
+    The arguments given are placed after the program name, the way the
+    shell would pass them, and the parsed namespace comes back.
     """
 
     def parse(*given: str) -> argparse.Namespace:
@@ -60,7 +60,7 @@ def test_the_two_paths_are_what_the_flags_replace(
 def test_everything_else_comes_from_the_environment_unchanged(
     argv: Callable[..., argparse.Namespace],
 ):
-    """The page and the console must be two views of one library."""
+    """Only the two paths are replaced. Every other field keeps its value."""
     config = config_for(argv())
 
     assert config.vector_store == settings.vector_store
@@ -92,8 +92,12 @@ def test_an_option_that_does_not_exist_is_refused(
 
 
 def test_the_script_runs_and_describes_itself():
-    """Run as a module, the way the README says to: nothing imported at the top
-    level of the script may need a key or a store to be there already."""
+    """The script starts as a module and prints its own help.
+
+    It runs in a subprocess, so the import path and the argument parser are
+    covered together.
+    """
+
     finished = subprocess.run(
         [sys.executable, "-m", "scripts.serve", "--help"],
         capture_output=True,

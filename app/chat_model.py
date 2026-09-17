@@ -1,10 +1,9 @@
 """The chat model, built from the settings.
 
 Every provider here speaks the OpenAI chat completions API, so one client covers
-DeepSeek, an OpenAI model and a model running on your own machine (vLLM, Ollama,
-unsloth). What changes between them is the base URL, the model name and the key —
-`OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API_KEY`, the names the OpenAI client
-already reads, so a local server is pointed at the same way as a hosted one.
+DeepSeek, an OpenAI model and a model running on your own machine. What changes
+between them is the base URL, the model name and the key, under the names the
+OpenAI client already reads.
 """
 
 from __future__ import annotations
@@ -27,10 +26,10 @@ class ChatProfile:
 
     base_url: str
     model: str
-    # Used instead of OPENAI_API_KEY: a local server ignores the key and has no
-    # business being handed a real one.
+    # Used in place of the key in OPENAI_API_KEY. A local server ignores the key
+    # and has no reason to be handed a real one.
     api_key_default: str = ""
-    # Provider-specific parameters that do not belong in the graph.
+    # Parameters for one provider, which the graph does not need to know about.
     extra_body: dict[str, Any] = field(default_factory=dict)
 
 
@@ -38,10 +37,10 @@ PRESETS: dict[str, ChatProfile] = {
     "deepseek": ChatProfile(
         base_url="https://api.deepseek.com/v1",
         model="deepseek-v4-flash",
-        # Keeps the console on the final answer rather than on DeepSeek's
-        # internal reasoning stream, which is billed like any other token.
-        # This body travels with this preset: a model elsewhere is reached by
-        # setting CHAT_PROVIDER to "openai" or to "local".
+        # Keeps the console on the final answer instead of the reasoning stream
+        # of DeepSeek, which is billed like any other token. The body travels
+        # with this preset, and a model elsewhere is reached by setting
+        # CHAT_PROVIDER to "openai" or "local".
         extra_body={"thinking": {"type": "disabled"}},
     ),
     "openai": ChatProfile(
@@ -59,9 +58,9 @@ PRESETS: dict[str, ChatProfile] = {
 def build_chat_model(config: Settings = settings) -> BaseChatModel:
     """Build the model the graph answers with.
 
-    Nothing is contacted here: the model is only a client until a question is
-    asked. A missing key or a model name left empty fails now, with the variable
-    to set, rather than on the first answer.
+    Nothing is contacted here, because the model is only a client until a
+    question is asked. A missing key or an empty model name fails at this point
+    with the variable to set, instead of failing on the first answer.
     """
     provider = config.chat_provider.strip().lower()
     profile = PRESETS.get(provider)
@@ -78,7 +77,7 @@ def build_chat_model(config: Settings = settings) -> BaseChatModel:
             f"(CHAT_PROVIDER is {provider!r}, which has no default model)"
         )
 
-    # The preset's placeholder wins where there is one: what is under
+    # Where the preset has a placeholder for the key it wins, because the key in
     # OPENAI_API_KEY belongs to the endpoint the chat is pointed at.
     api_key = profile.api_key_default or config.openai_api_key
     if not api_key:

@@ -1,3 +1,10 @@
+"""Remove documents from the index and from the catalog.
+
+The file is left in the documents folder unless `--with-file` is given. A
+document whose file is gone from the folder is in the trash, and `--trashed`
+empties the trash in one go.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -18,21 +25,21 @@ def delete(
     documents_dir: Path | None = None,
     db_path: Path | None = None,
 ) -> DeleteReport:
-    """Delete documents from the index and the catalog, then print what it did.
+    """Take the named documents out, or everything that is in the trash.
 
-    With `trashed` the paths are ignored and the whole trash is emptied instead.
+    Returns what the run did. With `dry_run` nothing is opened for writing and
+    nothing changes, and the report says what a real run would have done.
     """
     documents_dir = Path(documents_dir or settings.documents_dir)
     db_path = Path(db_path or settings.catalog_db_path)
 
-    # Said before the work: a delete is the command where being pointed at the
-    # other store costs the most.
+    # Printed before anything happens, so that a run is readable afterwards.
     print(f"store   {describe_vector_store(settings)}")
     print(f"catalog {short_path(db_path)}\n")
 
     vectorstore = None
     if not dry_run:
-        # Imported here so a dry run opens no client and needs no API keys.
+        # Imported here so that a dry run does not open a vector store at all.
         from app.vectorstore import get_vectorstore
 
         vectorstore = get_vectorstore()
@@ -53,6 +60,7 @@ def delete(
 
 
 def print_report(report: DeleteReport, *, dry_run: bool = False) -> None:
+    """Print what the run did, one line per document."""
     for source in report.deleted:
         suffix = " (and its file)" if source in report.files_removed else ""
         print(f"delete  {source}{suffix}")
@@ -67,8 +75,8 @@ def print_report(report: DeleteReport, *, dry_run: bool = False) -> None:
     )
 
     if report.file_present:
-        # Emptying the index for a file that is still there is a legitimate way
-        # to start the document over, but it does not hold: say so.
+        # The file is still in the folder, so the next sync finds one the
+        # catalog does not know and indexes it as a new document.
         print(f"\nStill in the documents folder: {', '.join(report.file_present)}")
         print(
             "The next sync sees a file the catalog does not know, and indexes it "
@@ -81,6 +89,7 @@ def print_report(report: DeleteReport, *, dry_run: bool = False) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """The command line, with the two ways of naming documents checked."""
     parser = argparse.ArgumentParser(
         description=(
             "Remove documents from the index and the catalog. The file is left "
@@ -132,6 +141,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Run the delete command."""
     args = parse_args()
     delete(
         args.paths,

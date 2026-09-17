@@ -1,22 +1,12 @@
-"""Scoring what a search found, by a model that reads the question and the passage.
+"""Reranking of search results by a cross-encoder.
 
-An embedding is one vector per text, computed before the question is known, so
-the best a similarity search can say is that two texts are near each other in a
-space neither of them was placed in with the other in mind. A cross-encoder reads
-the question and the passage *together* and answers for that pair, which is the
-thing an embedding cannot do and the reason this step exists. It is slow per
-pair — a forward pass each — so it is affordable over the twenty or so a search
-hands over and not over a library.
+A vector search compares embeddings that were computed before the question was
+known. A cross-encoder reads the question and the passage together and scores
+that pair directly. The score is better, but every pair costs a forward pass,
+so this runs only on the passages a search already returned.
 
-Reranking is therefore two numbers rather than one: how many passages the search
-is asked for, and how many of them the answer is written from. `RerankedRetriever`
-asks the retriever it wraps for the first and returns the best of them, so
-everything downstream — the graph, the commands, the web app, the eval harness —
-goes on taking a retriever and knowing nothing about any of this.
-
-The model is built on the first rerank and not before, and not at all when
-`RERANK` is off: it is a checkpoint of about two gigabytes, and a command that
-searches without reranking has no reason to pay for it.
+The retriever asks for RERANK_CANDIDATES passages and keeps the best
+RETRIEVAL_K of them. Everything downstream still receives an ordinary retriever.
 """
 
 from __future__ import annotations
@@ -31,14 +21,17 @@ from langchain_core.retrievers import BaseRetriever
 from app.config import Settings
 
 RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
-# The whole of what RERANK may say. A third value is refused rather than read as
-# one of these two: a search that silently was not reranked, or a model loaded and
-# then not used, are both worth a sentence at the point somebody wrote it.
+# The two values RERANK accepts. Any other value is refused with a message that
+# names them.
 MODES = ("on", "off")
 
 
 def enabled(config: Settings) -> bool:
-    """Whether searches are reranked, as the setting says."""
+    """Whether searches are reranked.
+
+    RERANK has to be "on" or "off". Any other value raises an error listing the
+    two words that are accepted.
+    """
     mode = config.rerank.strip().lower()
 
     if mode == "on":
@@ -52,27 +45,25 @@ def enabled(config: Settings) -> bool:
 
 
 def model_name(config: Settings) -> str:
-    """The model this configuration reranks with, by its own name.
+    """The name of the model used for reranking.
 
-    The configured name when there is one and this project's default when there
-    is not, so that a machine which leaves `RERANK_MODEL` empty and one which
-    spells the default out are seen to be running the same model. This is the
-    name a command prints, and the name a comparison of two runs is read by.
+    When RERANK_MODEL is empty this falls back to the default of the project.
+    A machine that leaves the setting blank and a machine that writes the
+    default out then run the same model. Commands print this name and two runs
+    are compared by it.
     """
     return config.rerank_model or RERANK_MODEL
 
 
 def describe_rerank(config: Settings) -> str:
-    """Reranking in one line, for a command to print at the top of a run.
+    """One line about reranking, for a command to print when it starts.
 
-    Both numbers, because a reranked run and a plain one are handed a different
-    question by the store and their output is therefore not comparable unless the
-    line says which pass produced it.
+    The line carries both numbers because the store is asked for a different
+    number of passages depending on the mode. Two reports can only be compared
+    when the line says which pass produced them.
 
-    A mode that is neither on nor off is printed as it was written rather than
-    refused here: this line describes a run, and a run stops where the mode would
-    have to be honoured — in the search, with a message saying which two words it
-    wanted. A command must not fail while describing itself.
+    A value that is not "on" is printed as it was written. The run stops later,
+    in the search itself, where the mode has to be honoured.
     """
     mode = config.rerank.strip().lower()
     if mode != "on":
@@ -86,17 +77,13 @@ def describe_rerank(config: Settings) -> str:
 
 @lru_cache(maxsize=1)
 def get_reranker(config: Settings) -> Any:
-    """Build the model a search is reranked with, once per process.
+    """Build the cross-encoder once per process.
 
-    `config` is an argument rather than a default bound to this module's
-    `settings`, for the reason `app.vectorstore.get_vectorstore` reads its own in
-    the body: a default is bound once, at import, and a caller which replaced the
-    settings would keep being handed the model of the machine's `.env`.
+    The settings arrive as an argument instead of being read from the module,
+    so that a caller which replaced them gets the model it asked for.
 
-    The import is inside the function. Everything here already reaches torch
-    through `app.embeddings`, so this is not about the import: it is about the
-    checkpoint, which is two gigabytes and a few seconds nobody who turned
-    reranking off should spend.
+    The import sits inside the function because the checkpoint weighs about two
+    gigabytes and takes a few seconds to load.
     """
     from sentence_transformers.cross_encoder import CrossEncoder
 
@@ -104,20 +91,14 @@ def get_reranker(config: Settings) -> Any:
 
 
 class RerankedRetriever(BaseRetriever):
-    """What a retriever found, in the order the reranker puts it in.
+    """A retriever that reorders what another retriever found.
 
-    The retriever this wraps is asked for the candidates, which is the search
-    exactly as it has always been — same query, same filter over the same
-    documents — and every passage it returns is scored against the question. The
-    best `k` are handed on; the rest are dropped, and were only ever there to be
-    looked at.
+    The wrapped retriever runs the same search as always, with the same query
+    and the same filter over the same documents. Every passage it returns is
+    scored against the question and the best `k` are handed on.
 
-    Two things it deliberately does not do. It does not rerank a single passage,
-    because an order of one cannot be improved and the forward pass would be
-    spent for nothing. And it does not break a tie by itself: the sort is stable
-    and reads only the score, so passages the model scores equally stay in the
-    order the similarity search put them — a ranking refined, not replaced by an
-    arbitrary one.
+    A single passage is returned unchanged. The sort reads only the score and
+    keeps passages with equal scores in the order the search produced them.
     """
 
     retriever: BaseRetriever
@@ -127,9 +108,8 @@ class RerankedRetriever(BaseRetriever):
     def _get_relevant_documents(
         self, query: str, *, run_manager: CallbackManagerForRetrieverRun
     ) -> list[Document]:
-        # `invoke` rather than the private method, and with the callbacks handed
-        # on: the inner search is a run of its own, and a caller's handlers should
-        # see it rather than a search that happened with nobody watching.
+        # The callbacks are passed on, so the inner search appears as a run of
+        # its own to whoever is watching.
         found = self.retriever.invoke(
             query, config={"callbacks": run_manager.get_child()}
         )

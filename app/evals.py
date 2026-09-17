@@ -1,29 +1,23 @@
-"""A set of questions, and what the library does with them.
+"""Measure an answer pipeline against questions whose answers are known.
 
-Work on retrieval quality needs a number to move. A change that reads better is
-not evidence, and what comes after this in the roadmap — a reranker, hybrid
-search, a grading node — is one change after another to the same path, each of
-them worth measuring the same way.
+A question set is a JSON list. Each question names the document that holds the
+answer, and usually the page as well, and lists phrases an answer should
+contain.
 
-A question is written with the document it should be answered from, and that is
-what makes it measurable: the search either returned a passage of that document
-or it did not. Whether it was found is not the whole of it — a passage placed
-tenth and the same passage placed first are the same hit and a different search —
-so the ranking is also read as a ranking, by nDCG over the first `NDCG_CUTOFF`
-passages, which is where a reordering shows up at all. `ndcg_at` says what that
-number is measured against and the one way it departs from a benchmark's.
-Retrieval is measured on its own and from the question as it was typed, because
-that is the input the search is given, and it costs one embedding per question
-and no model call at all. The answer half is asked for: it writes an
-answer from the passages the search returned, with the console's own prompt, and
-reads it against what the question said the answer holds. `judge` adds a model
-that says whether every claim in the answer is one the context supports, which is
-what faithfulness means here and the only part of this that costs a second call
-per question.
+Running the set puts every question to a retriever. When a chat model is given,
+the question is asked of it too, using the same context the chat endpoint would
+build. What comes back is recorded question by question: where the document
+landed in the ranking, which expected phrases the answer left out, and, when a
+judge model is given, whether the answer stayed within the passages it was
+written from.
 
-The passages are read once and used for both halves, so a question the search
-missed cannot be rescued by a good answer: it was one search, and what it
-returned is what the answer was written from.
+Summary turns those results into the counts and scores a run is compared on.
+Finding is scored by where the right document and page appear among the
+passages, and answers are scored by the phrases they contain and by the judge's
+verdict.
+
+The questions come from a file, so the same module can measure any library a
+question set has been written for.
 """
 
 from __future__ import annotations
@@ -43,18 +37,18 @@ from langchain_core.retrievers import BaseRetriever
 from app.ingestion import whole_number
 from app.rag_graph import answer_prompt, format_context
 
-# What a question in a set may say about itself, and the whole of it. A field
-# that is not here is a field nothing reads, and the one that matters is the one
-# spelled wrong: a set is written by hand, and `contians` would measure nothing
-# and say nothing about it.
+# The keys a question may carry. A file with any other key is refused, so a
+# misspelled field is reported instead of being ignored.
+
 FIELDS = ("id", "question", "document", "page", "contains", "note")
 
-# How far down the returned passages nDCG is read. Ten is the convention the
-# metric is quoted at, and it is a constant here rather than a setting because
-# nothing outside a measurement reads it: the console answers from the top
-# `retrieval_k` and has no opinion about the tenth passage. A run asks the search
-# for at least this many so that the ten exist to be read.
+
+# How many of the returned passages the nDCG is computed over.
+
 NDCG_CUTOFF = 10
+
+# Asked of a second model, which says whether the answer stays within the
+# context it was written from.
 
 judge_prompt = ChatPromptTemplate.from_messages([
     (
@@ -90,21 +84,15 @@ Answer:
 
 @dataclass(frozen=True)
 class Question:
-    """One question, and what a good answer to it would have to be.
+    """One question from a question set.
 
-    `document` is the document the answer should come from, as the catalog holds
-    it: the path relative to the documents folder. It is the one thing a
-    measurement needs. A question without one is a question the library does not
-    answer — the case faithfulness is most likely to be tested by, since an
-    answer written from passages that hold nothing relevant is where invention
-    happens — and retrieval is not measured on it, there being no document it
-    should have found.
+    `document` is the file in the library that holds the answer, or None for a
+    question the library is not expected to answer. `page` narrows it to one
+    page of that file, counted from one.
 
-    `page` is the page that answers it, counted as a reader counts pages, and is
-    optional because it is work to write down and the document alone is already
-    a measurement. `contains` is what a correct answer says, checked as plain
-    text: what is being measured is whether the answer landed on the content, and
-    a string a person can read off the page is the whole of what that needs.
+    `contains` lists phrases an answer has to include, compared with whitespace
+    collapsed and case ignored. `note` is free text for whoever reads the set,
+    and nothing checks it.
     """
 
     id: str
@@ -117,18 +105,16 @@ class Question:
 
 @dataclass
 class QuestionResult:
-    """What one question did, and what was written about it.
+    """What one question did when it was run.
 
-    `rank` is where in the ranking the first passage of the expected document
-    came, counted from one, and None means the search did not return one at all;
-    `page_rank` is the same over the passages of the expected page. An answer is
-    None when the run was not asked to write one, and `faithful` is None when no
-    judge read it — which is not the same as a judge that read it and could not
-    answer, and `judge_error` is what tells the two apart.
+    `asked` is False for a question left out because its document was not in
+    scope. `rank` is where the right document appeared among the passages and
+    `page_rank` the same for the right page. `grades` scores the passages that
+    came back and `sources` is the source rows the context was built from.
 
-    `grades` is the whole of what nDCG is computed from: how good each returned
-    passage is, in the order it came back, which the two ranks above cannot say
-    because they keep the first position and throw the rest away.
+    `answer` is what the model wrote and `missing` the expected phrases it left
+    out. A judge fills in `faithful` and the claims it found unsupported.
+    `error` and `judge_error` hold the message when a call failed.
     """
 
     question: Question
@@ -147,22 +133,22 @@ class QuestionResult:
 
 @dataclass
 class EvalReport:
-    """Every question of a run, in the order the set holds them."""
+    """One run of a question set: a result per question, in the order asked."""
 
     results: list[QuestionResult] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class Summary:
-    """What a run's numbers are, added up.
+    """The counts and scores of a run.
 
-    `measurable` is the questions retrieval could be measured on: those that were
-    asked, and that named a document to have found. `reciprocal_rank` is the mean
-    of `1/rank` over them, which is where a search that finds the right document
-    third rather than first is worse and says so. `ndcg` is the mean of nDCG@10
-    over the same questions, and says something the other two cannot: not whether
-    the right passage was found but how near the top it was put, judged against
-    the best order the passages it did return could have been in.
+    `measurable` counts the questions that were asked and name a document,
+    since only those can be scored on finding it. `hits` counts the ones whose
+    document came back at all and `page_hits` the ones whose page did too.
+    `reciprocal_rank` and `ndcg` are averaged over the measurable questions.
+
+    `complete` counts the answers holding every expected phrase and `faithful`
+    the ones the judge accepted. `unjudged` counts the judge calls that failed.
     """
 
     questions: int
@@ -183,12 +169,12 @@ class Summary:
 
 
 def load_questions(path: Path) -> list[Question]:
-    """The questions a file holds, in the order it holds them.
+    """Read a question set from a JSON file.
 
-    Every refusal here is the reader's, and reads as a sentence naming what is
-    wrong with which question: a set is written by hand, and a traceback is not
-    how a missing comma should be found.
+    Raises ValueError, with a message naming the problem, when the file is
+    missing, is not JSON, or holds a question that is not shaped right.
     """
+
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
@@ -223,7 +209,8 @@ def load_questions(path: Path) -> list[Question]:
 
 
 def _set_problem(loaded: Any, path: Path) -> str | None:
-    """What is wrong with what a set's file holds, or None when nothing is."""
+    """The problem with the loaded file, or None when it is a list."""
+
     if not isinstance(loaded, list):
         return (
             f"{path} holds a {type(loaded).__name__}; a question set is a list "
@@ -234,7 +221,8 @@ def _set_problem(loaded: Any, path: Path) -> str | None:
 
 
 def _question(entry: Any, number: int, path: Path) -> Question:
-    """One entry of a set, or the sentence saying what is wrong with it."""
+    """Turn one entry of the file into a Question, or raise ValueError."""
+
     where = f"question {number} of {path}"
     problem = _what_is_wrong(entry, where)
 
@@ -252,12 +240,12 @@ def _question(entry: Any, number: int, path: Path) -> Question:
 
 
 def _what_is_wrong(entry: Any, where: str) -> str | None:
-    """What is wrong with a question, or None when nothing is.
+    """The problem with one question entry, or None when it is well formed.
 
-    Returned rather than raised, so that everything a set can be wrong about
-    leaves this module through one door: what a caller catches is one exception
-    for a set it cannot read, whichever way the set is broken.
+    `where` names the entry, so the message points the reader at the part of
+    the file to fix.
     """
+
     if not isinstance(entry, dict):
         return f"The {where} is a {type(entry).__name__}, not an object."
 
@@ -300,14 +288,16 @@ def _what_is_wrong(entry: Any, where: str) -> str | None:
 
 
 def _is_text_list(value: Any) -> bool:
-    """Whether a value is a list of strings with something written in each."""
+    """Whether the value is a list of strings that are not blank."""
+
     return isinstance(value, list) and all(
         isinstance(text, str) and text.strip() for text in value
     )
 
 
 def _listed(names: Iterable[str]) -> str:
-    """Names as a sentence lists them: `a, b or c`."""
+    """The names as one phrase, for a message that lists the fields."""
+
     ordered = sorted(names)
     if len(ordered) == 1:
         return ordered[0]
@@ -324,29 +314,19 @@ def run_evals(
     chat_model: BaseChatModel | None = None,
     judge_model: BaseChatModel | None = None,
 ) -> EvalReport:
-    """Ask each question of the retriever, and measure what came back.
+    """Run a question set and collect what each question did.
 
-    The retriever is an argument, so the same set can be measured through the
-    console's path, through a chain being tried out, or through a double in a
-    test. `in_scope` is the documents the search is over, and a question whose
-    document is not among them is left out rather than counted as a miss: it was
-    not asked, which is a different thing from being asked and not found. Both
-    it and `descriptions` are handed to `format_context`, because the answer is
-    written from what the console would have shown it.
+    Only the retriever is required. With no chat model the run measures finding
+    alone, and with no judge model it records no verdict on the answers.
 
-    `read_at` is how many of the returned passages the numbers about *finding*
-    are read over — the rank of the document, the rank of the page, and the two
-    hit counts. It is what the console hands the model, and a call asks for more
-    than that only so that a ranking has ten passages to be read to the end of;
-    without this the four numbers would quietly be about a pool the answer was
-    never written from, and a run would report finding a document it never
-    showed anyone. Left unset, everything returned is read, which is what a
-    whole-document scope needs: its passages are the document, and there is no
-    fifth of it to stop at.
-
-    A question that raises does not end the run — a search is a network call, and
-    one that fails is one question's result, not the whole measurement.
+    `read_at` limits the ranking numbers to the first N passages returned. That
+    matters when a reranker hands back more passages than the retriever was
+    asked for, since those extras were never read by anyone. `in_scope` works
+    as it does in a chat: a question about a document outside it is skipped.
+    `descriptions` is the catalog text for the documents in scope, and it goes
+    into the context the answer is written from.
     """
+
     results: list[QuestionResult] = []
 
     for question in questions:
@@ -386,7 +366,8 @@ def _run_one(
     chat_model: BaseChatModel | None,
     judge_model: BaseChatModel | None,
 ) -> QuestionResult:
-    """One question, from the search to the verdict on its answer."""
+    """Run one question. A call that fails is recorded, not raised."""
+
     try:
         passages = retriever.invoke(question.question)
     except Exception as exc:  # noqa: BLE001 - one question's failure, not the run's
@@ -396,17 +377,15 @@ def _run_one(
         passages, in_scope=in_scope, descriptions=descriptions
     )
 
-    # What was found is read over what the answer was written from, not over the
-    # wider pool a ranking is read to the end of. A document at position eight
-    # was returned to the harness and never to the reader, and counting it as
-    # found would report a search the console does not have.
+    # The ranking is measured over the passages a chat would have read, which
+    # is the first read_at of them when a limit was given.
+
     shown = passages if read_at is None else passages[:read_at]
 
-    # Two readings of one ranking: where the document was found, and where it was
-    # found on the page the question named. The second is not a refinement of the
-    # first — a search can return the document and never the page — but a question
-    # that named no page has nothing to narrow to, and says so with None rather
-    # than by reporting the document's rank twice.
+    # Where the answering document landed, counting from one, or None when it
+    # did not come back at all. The page is looked for only when the question
+    # names one.
+
     found = rank_of(shown, question.document)
 
     result = QuestionResult(
@@ -449,13 +428,12 @@ def rank_of(
     *,
     page: int | None = None,
 ) -> int | None:
-    """Where in the ranking the first passage of that document came, from one.
+    """Where a document sits among the passages, counting from one.
 
-    The ranking is the search's own order, read before the rows are merged by
-    place: two passages of one page are two results, and the first of them is
-    where the document was found. `page` narrows the same question to the
-    passages of one page, which is a stricter measure of the same search.
+    With a page, the passage also has to be on that page. Returns None when no
+    document was asked for, and when the document is not among the passages.
     """
+
     if document is None:
         return None
 
@@ -470,33 +448,26 @@ def rank_of(
 
 
 def page_of(passage: Document) -> int | None:
-    """The page a passage sits on, as a reader counts pages.
+    """The page a passage is on, counted from one as a reader counts pages.
 
-    The metadata counts from zero — the reader's own convention, kept because it
-    is what the offsets are counted in — and a question set is written by
-    somebody looking at a page number. The one is turned into the other here,
-    once, rather than at every comparison.
+    Pages are stored counting from zero and metadata comes back from a store as
+    whatever type it kept, so None is returned when the stored value is not a
+    whole number.
     """
+
     page = whole_number(passage.metadata.get("page"))
 
     return None if page is None else page + 1
 
 
 def _grade(passage: Document, question: Question) -> int:
-    """How good a passage is for a question, on the scale nDCG reads.
+    """How well one passage answers a question.
 
-    Two levels are available, and the question decides which: the document the
-    answer should come from, and the page of it that answers. A question that
-    named the page wants a passage of that page above all and a passage of the
-    document above the rest, which is 2 and 1. A question that named only the
-    document has one thing to say about a passage — whether it is from there —
-    and what it means is 1, because a second level that nothing asked for would
-    make the two kinds of question incomparable.
-
-    A question with no document grades everything 0, which is not a ranking
-    problem: retrieval is not measured on it at all, and this only keeps the
-    grades the same length as the passages.
+    2 when it is on the page the question names, 1 when it comes from the right
+    document but another page, and 0 when it comes from another document. A
+    question that names no document grades every passage 0.
     """
+
     if question.document is None:
         return 0
 
@@ -510,32 +481,18 @@ def _grade(passage: Document, question: Question) -> int:
 
 
 def ndcg_at(grades: Sequence[int], *, cutoff: int = NDCG_CUTOFF) -> float:
-    """How well ordered the passages that came back are, over the first `cutoff`.
+    """Score a ranking by what it put near the top.
 
-    Each passage is worth its grade discounted by how far down it was found, and
-    the total is read against the same total for the best order those passages
-    could have been in — the grades it has, highest first. So 1.0 is a ranking
-    that put the best of what it found as high as it could have, and anything
-    lower is a ranking that buried it under something worse.
+    Each grade is divided by the log of the position it was found at, so a good
+    passage found early counts for more than the same passage found late. The
+    total is divided by the best total the same grades could have reached, in
+    the order that scores highest. Dividing by that ideal makes one question's
+    score comparable with another's.
 
-    **The ideal is the one the returned passages allow, and that is a departure
-    worth naming.** The textbook ideal runs over every relevant passage in the
-    collection; here a question names one document and at most one page, and how
-    many other passages of it there are is not something a question set knows. An
-    ideal of a single perfect passage — the obvious substitute — is not a bound
-    at all: every chunk of the answering page is the answering page, so a search
-    that returns five of them and no junk scores five times what one of them
-    would, and nDCG@10 comes out above 1 and means nothing.
-
-    What that costs is stated where it shows: a search that came back with the
-    right document and never the right page, in the best order it could manage,
-    scores 1.0 — its ordering was not the problem. Whether the page was found is
-    what the page rate is for, and the report prints the two on one line so they
-    are read together.
-
-    A ranking with nothing relevant in it has an ideal of 0 as well, and scores 0
-    rather than dividing by it. A cutoff of zero reads nothing, which is also 0.
+    Only the first `cutoff` grades are read. Returns 0.0 when the cutoff is not
+    positive, and when every grade read is 0.
     """
+
     if cutoff <= 0:
         return 0.0
 
@@ -556,14 +513,12 @@ def ndcg_at(grades: Sequence[int], *, cutoff: int = NDCG_CUTOFF) -> float:
 
 
 def missing_from(answer: str, expected: Sequence[str]) -> list[str]:
-    """The strings a question expected and the answer does not hold.
+    """The expected phrases that an answer does not contain.
 
-    Compared without case and without runs of whitespace, because what is asked
-    is whether the answer says this and not whether it says it in the same
-    characters: a set is written by hand, and a word at the start of a line is
-    not a wrong answer. Accents are not folded — the answer is written in the
-    language of the question, and the set is written in it too.
+    Both sides are compared with runs of whitespace collapsed and case ignored,
+    so an answer is not marked down for the way it was spaced.
     """
+
     flat = " ".join(answer.split()).casefold()
 
     return [
@@ -572,12 +527,12 @@ def missing_from(answer: str, expected: Sequence[str]) -> list[str]:
 
 
 def write_answer(chat_model: BaseChatModel, question: str, context: str) -> str:
-    """The answer the console would have written from these passages.
+    """Ask the chat model a question, giving it the context as its only source.
 
-    The prompt is the console's own, imported rather than written again beside
-    it: what is being measured is the answer this project gives, and a second
-    prompt would measure the second prompt.
+    This uses the prompt the chat endpoint uses, so a run measures the answers
+    the app would actually give.
     """
+
     reply = chat_model.invoke(answer_prompt.invoke({
         "question": question,
         "context": context,
@@ -590,7 +545,8 @@ def write_answer(chat_model: BaseChatModel, question: str, context: str) -> str:
 def judge_answer(
     judge_model: BaseChatModel, question: str, context: str, written: str
 ) -> tuple[bool | None, list[str]]:
-    """Whether every claim in the answer is one the context supports."""
+    """Put a written answer to the judge and read its reply."""
+
     reply = judge_model.invoke(judge_prompt.invoke({
         "question": question,
         "context": context,
@@ -602,12 +558,13 @@ def judge_answer(
 
 
 def read_verdict(reply: str) -> tuple[bool | None, list[str]]:
-    """What a judge said, as a verdict and the claims behind it.
+    """Read what the judge wrote.
 
-    The first word is the verdict and the rest is why. A reply that does not open
-    with yes or no is no answer rather than a pass: a judge that did not answer
-    must not be the reason an answer is called faithful.
+    The first line carries the verdict. Any line after it names a claim the
+    judge found unsupported. Returns None for the verdict when the first line
+    is neither yes nor no.
     """
+
     lines = [line.strip() for line in reply.strip().splitlines() if line.strip()]
     if not lines:
         return None, []
@@ -622,7 +579,8 @@ def read_verdict(reply: str) -> tuple[bool | None, list[str]]:
 
 
 def summarise(report: EvalReport) -> Summary:
-    """A run's results, added up."""
+    """Count and average a run's results."""
+
     asked = [result for result in report.results if result.asked]
     measurable = [
         result for result in asked if result.question.document is not None
@@ -643,10 +601,10 @@ def summarise(report: EvalReport) -> Summary:
         reciprocal_rank=(
             sum(1 / rank for rank in found) / len(measurable) if measurable else 0.0
         ),
-        # Over `measurable` rather than over the questions with grades to read: a
-        # question the search failed on has no grades, and dropping it would let
-        # a run that broke score better than one that answered badly. Its nDCG is
-        # 0 through `ndcg_at`, which is what a miss is worth.
+
+        # Every measurable question counts here, including the ones where the
+        # document did not come back. Those score 0 and pull the average down.
+
         ndcg=(
             sum(ndcg_at(result.grades) for result in measurable) / len(measurable)
             if measurable

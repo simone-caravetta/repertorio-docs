@@ -1,4 +1,4 @@
-"""Which embedding model the settings select, without downloading one."""
+"""Tests for choosing the embedding model: the local one or OpenAI."""
 
 from __future__ import annotations
 
@@ -13,7 +13,11 @@ from tests.helpers import make_settings
 
 
 class FakeHuggingFaceEmbeddings:
-    """Records how it was built instead of loading a model from the disk."""
+    """A stand-in that keeps the arguments it was built with.
+
+    Nothing here loads a model. The settings the real class would have received
+    are recorded instead, and those are what the tests read.
+    """
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
@@ -21,13 +25,14 @@ class FakeHuggingFaceEmbeddings:
 
 @pytest.fixture(autouse=True)
 def no_model_load(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make loading a real model, or downloading one, impossible here."""
+    """Put the stand-in in place of the real class, in every test here."""
     monkeypatch.setattr(
         embeddings_module, "HuggingFaceEmbeddings", FakeHuggingFaceEmbeddings
     )
 
 
 def test_local_is_the_default_and_keeps_the_model_it_had():
+    """The default provider builds the local model on the CPU, in batches."""
     model = get_embeddings(make_settings())
 
     assert LOCAL_MODEL == "BAAI/bge-m3"
@@ -40,6 +45,7 @@ def test_local_is_the_default_and_keeps_the_model_it_had():
 
 
 def test_the_local_model_can_be_replaced():
+    """A model named in the settings is the one the local provider builds."""
     model = get_embeddings(
         make_settings(embedding_model="intfloat/multilingual-e5-large")
     )
@@ -48,17 +54,19 @@ def test_the_local_model_can_be_replaced():
 
 
 def test_openai_uses_its_default_model_and_the_key():
+    """The OpenAI provider builds its own class, with the key it was given."""
     model = get_embeddings(make_settings(embedding_provider="openai"))
 
     assert OPENAI_MODEL == "text-embedding-3-small"
     assert isinstance(model, OpenAIEmbeddings)
     assert model.model == OPENAI_MODEL
     assert model.openai_api_key.get_secret_value() == "endpoint-key"
-    # Pinned to OpenAI: OPENAI_BASE_URL points at the chat model, elsewhere.
+
     assert model.openai_api_base == "https://api.openai.com/v1"
 
 
 def test_the_embeddings_can_have_a_key_of_their_own():
+    """A key set for the embeddings wins over the one the chat model uses."""
     model = get_embeddings(
         make_settings(embedding_provider="openai", embedding_api_key="embedding-key")
     )
@@ -67,6 +75,7 @@ def test_the_embeddings_can_have_a_key_of_their_own():
 
 
 def test_openai_without_a_key_names_the_variable():
+    """With no key at all, the message names the variable to fill in."""
     with pytest.raises(RuntimeError, match="EMBEDDING_API_KEY"):
         get_embeddings(
             make_settings(
@@ -76,34 +85,35 @@ def test_openai_without_a_key_names_the_variable():
 
 
 def test_an_unknown_provider_is_refused():
+    """A provider the code does not know is refused, by name."""
     with pytest.raises(RuntimeError, match="EMBEDDING_PROVIDER"):
         get_embeddings(make_settings(embedding_provider="cohere"))
 
 
 def test_a_model_named_in_the_settings_is_the_one_named():
+    """`model_name` reports the model the settings name."""
     settings = make_settings(embedding_model="intfloat/multilingual-e5-large")
 
     assert model_name(settings) == "intfloat/multilingual-e5-large"
 
 
 def test_the_model_is_named_when_the_setting_is_empty():
-    """The name the catalog records is the model, not the variable that chose it.
+    """With no model named, the default of the provider is reported.
 
-    A machine that leaves EMBEDDING_MODEL empty and one that spells the default
-    out are indexing with the same model, and a fingerprint taken from the
-    setting would call them two.
+    Which model that is depends on the provider, so both are read here.
     """
+
     assert model_name(make_settings()) == LOCAL_MODEL
     assert model_name(make_settings(embedding_provider="openai")) == OPENAI_MODEL
 
 
 def test_the_model_named_is_the_one_that_would_be_built():
-    """Both read the provider's default from the same place.
+    """`model_name` agrees with the model `get_embeddings` builds.
 
-    A catalog recording a name the run did not use would be worse than one
-    recording none, so this is checked on the provider whose default is not the
-    one the empty setting would fall back to.
+    The two are read on their own, so this is what keeps the name the console
+    reports the same as the model that answers.
     """
+
     local = make_settings()
     remote = make_settings(embedding_provider="openai")
 
@@ -112,5 +122,6 @@ def test_the_model_named_is_the_one_that_would_be_built():
 
 
 def test_an_unknown_provider_has_no_model_to_name():
+    """An unknown provider is refused here as well."""
     with pytest.raises(RuntimeError, match="EMBEDDING_PROVIDER"):
         model_name(make_settings(embedding_provider="cohere"))

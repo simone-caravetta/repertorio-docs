@@ -1,22 +1,9 @@
-"""What each document is about, in a paragraph, written once and kept.
+"""Writing the description of a document.
 
-A search returns the passages closest to a question, which is what makes a
-question about the library itself hard to answer from them: asked what the
-documents contain, the answer is whatever the search happened to find, and a
-small document beside a large one is never among it. The catalog has a
-`description` column for exactly this, and until now nothing wrote it.
-
-Written here rather than at every question. A description is a fact about a
-document, it costs one model call per document instead of one per question, and
-it is read back by the console, by the page, and by the context an answer is
-written from — which is the point: a document whose passages the search did not
-return is still a document the answer can say something about.
-
-Two callers write one, and both come through `write_descriptions`: the sync, as
-it indexes, and `scripts.describe`, for a library that is already indexed. A
-description therefore does not depend on which of them wrote it, and the sync
-cannot drift into describing a document differently from the command that exists
-to describe it.
+A description says what a document contains. It goes into the context of every
+answer, under the list of the documents that were searched. The chat model
+writes it from a sample of pages taken from across the document, once per
+document, and the catalog keeps it.
 """
 
 from __future__ import annotations
@@ -33,9 +20,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from app.catalog import Catalog, DocumentRecord
 from app.ingestion import load_pdf
 
-# How many places in a document the sample is taken from. The budget decides how
-# much of the document is read; this decides how evenly it is spread, with the
-# first and the last page among them.
+# How many pages of a document are shown to the model.
 SAMPLE_PAGES = 5
 
 description_prompt = ChatPromptTemplate.from_messages([
@@ -67,22 +52,14 @@ Extracts:
 
 
 def one_line(text: str) -> str:
-    """A description as one line, which is what everything downstream shows.
-
-    A model asked for two sentences may answer with a heading, a list, or a
-    paragraph with newlines inside it. The catalog holds one line, and the
-    context opens with one line per document: a newline in the middle of a
-    description would read as a second document having been searched.
-    """
+    """The text with every run of whitespace collapsed to a single space."""
     return " ".join(text.split())
 
 
 def spread(items: list[str], count: int) -> list[str]:
-    """`count` items taken from across a list, the first and the last among them.
+    """`count` items taken evenly from across the list, ends included.
 
-    Evenly spaced rather than every n-th, so that the last item is reached: a
-    document whose length is not a multiple of the step would otherwise never
-    show its end.
+    A list shorter than the count comes back whole.
     """
     if count >= len(items):
         return list(items)
@@ -96,12 +73,11 @@ def spread(items: list[str], count: int) -> list[str]:
 def sample(
     pages: list[Document], *, max_chars: int, count: int = SAMPLE_PAGES
 ) -> str:
-    """Extracts from across a document, within a character budget.
+    """The text of a sample of pages, cut to fit a character budget.
 
-    Across and not from the beginning: a title page and a table of contents are
-    the opening of most documents and describe none of them. Every extract gets
-    an equal share of the budget, so that one dense page cannot spend the whole
-    of it and leave the rest of the document unread.
+    Empty pages are dropped and the rest are taken from across the document.
+    The budget is divided between the pages that were chosen, leaving room for
+    the blank lines that separate them.
     """
     texts = [page.page_content.strip() for page in pages]
     texts = [text for text in texts if text]
@@ -110,8 +86,9 @@ def sample(
         return ""
 
     chosen = spread(texts, count)
-    # The blank lines between the extracts are part of the budget: the caller
-    # sets a number of characters to spend, and this spends no more than it.
+
+    # Two newlines go between the chosen pages, and what is left of the budget
+    # is shared out evenly over them.
     separators = 2 * (len(chosen) - 1)
     each = max(1, (max_chars - separators) // len(chosen))
 
@@ -119,17 +96,13 @@ def sample(
 
 
 def describe_document(model: BaseChatModel, *, name: str, text: str) -> str:
-    """One document's description, written from a sample of its text."""
+    """Ask the model to describe a document from its name and a sample of it."""
     chain = description_prompt | model | StrOutputParser()
     return one_line(chain.invoke({"name": name, "excerpts": text}))
 
 
 def undescribed(catalog: Catalog) -> list[DocumentRecord]:
-    """The indexed documents nothing has been written about yet.
-
-    Indexed and not merely in the catalog: a document that failed to index has no
-    text to describe, and one in the trash has a row but no file.
-    """
+    """The indexed documents that have no description yet."""
     return [
         record
         for record in catalog.all()
@@ -139,7 +112,7 @@ def undescribed(catalog: Catalog) -> list[DocumentRecord]:
 
 @dataclass(frozen=True)
 class DescribeReport:
-    """What a run over a list of documents did."""
+    """What a run wrote, and what it could not write."""
 
     written: list[tuple[str, str]] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)
@@ -153,14 +126,11 @@ def write_descriptions(
     documents_dir: Path,
     sample_chars: int,
 ) -> DescribeReport:
-    """Describe each document, one model call each, and keep it in the catalog.
+    """Write a description for each record, collecting the ones that failed.
 
-    A document that cannot be read, and a call that fails, are recorded and the
-    run goes on: this is a run over a library, and one unreadable document is not
-    a reason to stop at it.
-
-    Each description is written as it is produced, so a run that is interrupted
-    leaves what it had finished behind, and the next run picks up the rest.
+    A document that cannot be read or that produces no description is kept in
+    the failed list with the reason, and the run goes on to the next one. Only
+    the documents that were written are stored in the catalog.
     """
     documents_dir = Path(documents_dir)
     report = DescribeReport()

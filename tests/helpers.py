@@ -1,5 +1,9 @@
-"""Test doubles: a minimal PDF writer, a fake model, a fake vector store, a
-hermetic Settings."""
+"""Test doubles and small document builders used across the suite.
+
+The fakes stand in for the chat model, the vector store, the retriever and
+the reranker, so a test can run without a network call. The PDF builders let
+a test decide the layout of the document the reader is given.
+"""
 
 from __future__ import annotations
 
@@ -19,27 +23,26 @@ from pydantic import Field
 
 from app.config import Settings
 
-# A line long enough to produce a chunk, short enough to stay well under the
-# default chunk size.
+# A sentence a test repeats when a page needs more than one line of text.
 SENTENCE = "The manual of the thing explains how the thing works. "
 
-# A line of prose for a document built with real typography: short enough to fit
-# across the page at the size it is set in, which a PDF lays down in one run.
+# Filler that reads as ordinary body copy, so it is never taken for a
+# heading.
 BODY = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod."
 
-# What the tests index with. Any name does — a run is compared against itself —
-# and it is written down rather than looked up because a test that needed a real
-# model would be a test that downloaded one.
+# The model name the test settings carry. A test reads it back off a catalog
+# row to check which model indexed the document.
 EMBEDDING_MODEL = "test-model"
 
 
 def make_settings(**overrides: object) -> Settings:
-    """A Settings that does not depend on the machine the tests run on.
+    """Build settings with the values the tests expect.
 
-    Every field a provider reads is set here explicitly, because the defaults
-    are read from the environment once, when the class is defined. `overrides`
-    replaces the ones a test is about.
+    Any field can be replaced by passing it as a keyword argument. Pinning
+    everything here keeps a test from picking up whatever the environment
+    happens to hold.
     """
+
     values: dict[str, object] = {
         "chat_provider": "deepseek",
         "openai_base_url": "",
@@ -53,26 +56,25 @@ def make_settings(**overrides: object) -> Settings:
         "vector_store": "pinecone",
         "chroma_dir": Path("/tmp/repertorio-docs-test-chroma"),
         "chroma_collection": "documents",
-        # Set explicitly like every other provider: the catalog default follows
-        # VECTOR_STORE, and that is read from the machine's `.env` once, when
-        # the class is defined. A test must not inherit the folder layout of
-        # whoever runs it.
+
+        # Where a test writes. None of these files is opened unless the test
+        # asks for it.
         "documents_dir": Path("/tmp/repertorio-docs-test/documents"),
         "catalog_db_path": Path("/tmp/repertorio-docs-test/catalog.sqlite3"),
         "conversations_db_path": Path(
             "/tmp/repertorio-docs-test/conversations.sqlite3"
         ),
         "eval_questions_path": Path("/tmp/repertorio-docs-test/questions.json"),
-        # A scope is resolved against these two, so a test that pins neither
-        # would decide differently on a machine with a different `.env`.
+
+        # How a document is cut up and how much of it comes back.
         "chunk_size": 200,
         "retrieval_k": 5,
         "whole_document_max_chars": 24000,
         "description_sample_chars": 6000,
         "description_budget_chars": 2000,
-        # Off, and this is the load-bearing one: with it on, every test that
-        # builds a retriever would build a reranker, which is a download. A test
-        # about reranking turns it on and hands in a `FakeReranker`.
+
+        # Reranking stays off here. The tests that cover it turn it on
+        # through an override.
         "rerank": "off",
         "rerank_model": "",
         "rerank_candidates": 20,
@@ -83,23 +85,20 @@ def make_settings(**overrides: object) -> Settings:
 
 
 def _escape(text: str) -> str:
-    """Escape the characters a PDF string literal cannot contain bare."""
+    # Escape the characters that would end the string inside the PDF.
     for char in ("\\", "(", ")"):
         text = text.replace(char, f"\\{char}")
     return text
 
 
 def make_pdf(path: Path, text: str) -> Path:
-    """Write a minimal one-page PDF holding `text`, and return the path.
+    """Write a one-page PDF holding a single line of text.
 
-    An empty string produces a page with no text at all, which is what a scanned
-    document looks like to the text extractor. The file is assembled by hand —
-    no committed binary, and no PyMuPDF, which the tests that need real
-    typography use instead — so the cross-reference table has to be built with
-    the exact byte offsets a reader looks for.
-
-    Text is written with the Latin-1 encoding: keep it ASCII.
+    The file is assembled byte by byte, so it does not depend on a writer
+    library. An empty text leaves the page with no text at all, which is how
+    a scanned document arrives.
     """
+
     path.parent.mkdir(parents=True, exist_ok=True)
 
     stream = f"BT /F1 12 Tf 72 720 Td ({_escape(text)}) Tj ET" if text else ""
@@ -143,18 +142,26 @@ def make_pdf(path: Path, text: str) -> Path:
 
 @dataclass(frozen=True)
 class Line:
-    """A line of a built PDF: what it says, and the size it is set in."""
+    """One line of text to place on a page.
+
+    The size matters to the reader, which decides from it whether the line
+    is a heading.
+    """
 
     text: str
     size: float = 11.0
-    # Set only to put a line somewhere the stacking would not: a heading inside
-    # a table's grid, which is a case the reader has to get right.
+
+    # Where to put the line. Left unset, each line goes below the one before
+    # it.
     y: float | None = None
 
 
 @dataclass(frozen=True)
 class Table:
-    """A ruled grid of cells, drawn as what it is rather than as lines of text."""
+    """A grid of cells to draw on a page.
+
+    Every row is a list of cell texts, given top row first.
+    """
 
     rows: list[list[str]]
 
@@ -164,20 +171,15 @@ def make_structured_pdf(
     pages: list[list[Line | Table]],
     toc: list[list[Any]] | None = None,
 ) -> Path:
-    """Write a PDF with real typography — sizes, a ruled table, an index.
+    """Write a PDF from a description of its pages.
 
-    `make_pdf` above is enough for a document that is one flat run of text, which
-    is what most of the suite needs. Reading structure needs a document that has
-    some, and the three that matter here — letters at more than one size, a grid
-    of cells, a declared table of contents — cannot be hand-written without
-    embedding a font program. So this one is built with PyMuPDF, which the
-    project depends on anyway.
-
-    Each page is a list of items laid down the page in order, and each item is a
-    `Line` at the size it is set in or a `Table`. `toc` is what the document
-    declares about itself, in PyMuPDF's own shape: a list of
-    `[level, title, page]`, the page counted from one as a reader counts it.
+    Each page is a list of lines and tables. A line without a y is placed
+    under the line before it, so a page can be laid out without working out
+    coordinates. A table is drawn at the cursor and the cursor moves past
+    it. The toc argument writes the document outline, which is where the
+    reader looks for section titles.
     """
+
     path.parent.mkdir(parents=True, exist_ok=True)
 
     document = pymupdf.open()
@@ -205,13 +207,14 @@ def make_structured_pdf(
     return path
 
 
-# The height of one row of a built table, and the width of one of its columns.
+# Cell size in points. The row height also decides how far the cursor moves
+# after a table.
 _TABLE_ROW = 22.0
 _TABLE_COLUMN = 120.0
 
 
 def _draw_table(page: pymupdf.Page, rows: list[list[str]], *, y: float) -> None:
-    """A grid of rules with the cells written in it, sized to what it holds."""
+    # The grid lines go down first, so the cell texts sit on top of them.
     columns = max(len(row) for row in rows)
     width = _TABLE_COLUMN * columns
     height = _TABLE_ROW * len(rows)
@@ -231,14 +234,11 @@ def _draw_table(page: pymupdf.Page, rows: list[list[str]], *, y: float) -> None:
 
 
 class FakeChatModel(BaseChatModel):
-    """Replies from a list, one reply per call, and keeps the prompts it saw.
+    """A chat model that returns prepared replies and keeps the prompts.
 
-    It streams as well as it generates, a word at a time: what the graph hands a
-    caller in `messages` mode is the pieces a model produced, not one answer that
-    arrived whole, and a test of the token stream needs a model that has pieces
-    to give. Streaming is also what a real model does here — the callback the
-    graph installs is what makes it stream, so the console and the page both see
-    the answer as it is written.
+    The reply at index n answers the n-th call, so a test can script the
+    rewrite step and the answer step apart. The prompts are kept as well,
+    which lets a test check what the model was asked.
     """
 
     replies: list[str]
@@ -279,23 +279,22 @@ class FakeChatModel(BaseChatModel):
 
 
 def pieces_of(reply: str) -> list[str]:
-    """A reply as the pieces it streams in: words, spaces kept with them."""
+    # Split a reply the way a streaming model would send it, word by word
+    # with the spaces kept.
     words = reply.split(" ")
     return [word + " " for word in words[:-1]] + words[-1:]
 
 
 def as_a_store_returns(document: Document) -> Document:
-    """The same chunk as the hosted store hands it back.
+    """Turn a document into what a vector store hands back.
 
-    Pinecone answers in JSON, where every number is a float, so the page the
-    ingest wrote as 11 comes back as 11.0 — same chunk, same numbers, and a
-    reader that compares types rather than values sees a chunk with no page at
-    all. Nothing in the suite would notice: the fakes and the local store hand
-    back what they were given. This is what makes a test able to.
+    A store keeps metadata outside the process, so a whole number written in
+    comes back as a float. Tests that compare metadata from both sides use
+    this to get the types the application sees at run time.
     """
+
     metadata = {
-        # A bool is an int in Python and not a number in a store, so `table` is
-        # left as the flag it is.
+        # Page numbers and character offsets arrive as floats.
         key: float(value)
         if isinstance(value, int) and not isinstance(value, bool)
         else value
@@ -306,7 +305,11 @@ def as_a_store_returns(document: Document) -> Document:
 
 
 class FakeRetriever:
-    """The graph only ever calls `ainvoke` on a retriever, so that is all this is."""
+    """A retriever that returns the same documents whatever is asked.
+
+    The questions it was called with are recorded, so a test can check which
+    one reached the search.
+    """
 
     def __init__(self, documents: list[Document]) -> None:
         self.documents = documents
@@ -320,18 +323,12 @@ class FakeRetriever:
 
 
 class FakeReranker:
-    """Stands in for the cross-encoder, without downloading one.
+    """A cross-encoder stand-in that hands out scores from a callable.
 
-    `scores` is handed the pair and the place it came in at, so a test says the
-    order it wants in one expression: `lambda pair, at: -at` keeps what it was
-    given, `lambda pair, at: text.count("x")` ranks by something in the passage.
-    The default is the first of those — a reranker that changes nothing — which
-    is what a test about something further down wants to be holding.
-
-    It records the pairs it was asked about, because "was the reranker called at
-    all, and with what" is most of what there is to check about this step.
-    `predict`'s signature is the one thing that has to be imitated exactly: it is
-    called with keywords and its real one returns a numpy array of floats.
+    The callable receives a pair and its position in the batch. The default
+    gives the first passage the highest score, which is the order the search
+    returned. Every batch is recorded, along with the batch size and whether
+    a progress bar was asked for.
     """
 
     def __init__(
@@ -359,24 +356,19 @@ class FakeReranker:
 
 @dataclass
 class FakeVectorStore(VectorStore):
-    """Stands in for the Pinecone store.
+    """An in-memory vector store that records what it was asked to do.
 
-    It records the three calls the library ever makes on a store: adding chunks,
-    deleting by metadata filter, and searching. Sources listed in `fail_on` raise
-    on add, and sources listed in `fail_delete_on` raise on delete: that is how
-    the tests drive a failed ingest and a failed removal.
-
-    It really is a `VectorStore`, because some of the code under test takes one as
-    a pydantic field (`WholeDocumentRetriever.store`) and pydantic checks the type
-    rather than trusting the annotation. Inheriting also buys the real
-    `as_retriever`, so a test can search through the wiring the console uses
-    instead of through a stand-in for it.
+    Documents are kept in the order they were added and a search returns the
+    matches in reverse, so a test can tell the store's order from the order
+    the application puts them in. The fail_on and fail_delete_on sets make a
+    write raise, which is how an ingest failure is staged. Every add and
+    delete is appended to events in the order it happened.
     """
 
     added: list[tuple[list[Document], list[str]]] = field(default_factory=list)
     deleted: list[dict[str, object] | None] = field(default_factory=list)
     events: list[tuple[str, object]] = field(default_factory=list)
-    # Every search, as it was asked: the query, the k, and the filter.
+
     searches: list[tuple[str, int, dict[str, object] | None]] = field(
         default_factory=list
     )
@@ -409,13 +401,10 @@ class FakeVectorStore(VectorStore):
     def similarity_search(
         self, query: str, k: int = 4, **kwargs: object
     ) -> list[Document]:
-        """The chunks on record that match the filter, in reverse order.
+        """Return the documents that match the filter, newest first.
 
-        Reverse on purpose: a similarity search ranks by a question, so the order
-        it hands back is not the order the document reads in, and a caller that
-        wants reading order has to put it back. `k` is recorded rather than
-        applied — the fake holds a handful of chunks, and what a test wants to
-        know is what was asked for.
+        A filter of None matches everything. A source filter is either one
+        value or a mapping holding a $in list.
         """
         criteria = kwargs.get("filter")
         self.searches.append((query, k, criteria))  # type: ignore[arg-type]
@@ -430,8 +419,7 @@ class FakeVectorStore(VectorStore):
 
     @classmethod
     def from_texts(cls, *args: object, **kwargs: object) -> None:
-        """Abstract on the base class, and never reached: a test builds the fake
-        by hand, holding whatever chunks the case is about."""
+        # Required by the base class. A test builds the store directly.
         raise NotImplementedError
 
     @staticmethod
@@ -442,13 +430,13 @@ class FakeVectorStore(VectorStore):
             return True
 
         source = criteria.get("source")
-        if isinstance(source, dict):  # the {"$in": [...]} a scope builds
+        if isinstance(source, dict):
             return document.metadata.get("source") in (source.get("$in") or [])
         return document.metadata.get("source") == source
 
     @property
     def sources(self) -> list[str]:
-        """The sources of the chunks added so far, in order."""
+        # The source of every document added, in the order they arrived.
         return [
             str(document.metadata.get("source"))
             for documents, _ in self.added

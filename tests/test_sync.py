@@ -25,7 +25,12 @@ def run(
     store: FakeVectorStore | None,
     **kwargs: object,
 ) -> SyncReport:
-    """A run over a folder, with the sizes and the model a test may replace."""
+    """Run a sync over the documents folder with the test settings.
+
+    The embedding model and the chunking numbers are filled in here. A
+    keyword argument given by the caller is added on top of them.
+    """
+
     return sync_documents(
         documents_dir,
         db_path,
@@ -37,12 +42,13 @@ def run(
 def restamp(
     documents_dir: Path, db_path: Path, source: str, **fingerprint: object
 ) -> None:
-    """Leave a document as a run of other code would have left it.
+    """Write a catalog row for an indexed document with a chosen fingerprint.
 
-    The file hash is kept as it is, so the only thing about the row that differs
-    is what built its index — which is the case nothing else in the sync looks
-    at, and so the one these tests are about.
+    The file hash comes from the file on disk, so the row looks current.
+    The keyword arguments replace the fields that name what built the
+    index, which is how a row left by an older reading is staged.
     """
+
     Catalog(db_path).record_indexed(
         source,
         file_hash=compute_file_hash(documents_dir / source),
@@ -95,12 +101,13 @@ def test_a_new_file_is_filed_under_the_folder_it_sits_in(
 def test_a_re_index_leaves_a_moved_document_where_it_was_moved(
     documents_dir: Path, db_path: Path, store: FakeVectorStore
 ) -> None:
-    """The folder files a document once. After that the catalog is the authority.
+    """A re-index does not put a document back in its folder's category.
 
-    Without this the next sync would put every document moved by hand back where
-    its folder says it is, which would make the move a thing that lasts until the
-    next sync rather than a thing that is stored.
+    The category is set by hand between the two runs. The file is edited
+    first, so the second run indexes the document again and the category
+    stays where it was moved.
     """
+
     run(documents_dir, db_path, store)
     catalog = Catalog(db_path)
     catalog.set_category(MANUAL, "archive")
@@ -120,9 +127,8 @@ def test_unchanged_files_are_left_alone(
 
     report = run(documents_dir, db_path, store)
 
-    # Which also says what the run before left on the rows matches this one: a
-    # fingerprint that never matched would report every document as updated, on
-    # every run, for ever.
+    # The second run finds both files as they were, so nothing reached the
+    # store.
     assert report.skipped == [MANUAL, REPORT]
     assert report.added == []
     assert report.updated == []
@@ -142,8 +148,7 @@ def test_an_edited_file_is_indexed_again(
     assert report.updated == [MANUAL]
     assert report.skipped == [REPORT]
 
-    # The old chunks go before the new ones arrive, so an interrupted run can
-    # never leave both generations of the same document in the index.
+    # The chunks of the old reading go before the new ones are written.
     assert store.events[seen] == ("delete", {"source": MANUAL})
     assert store.events[seen + 1][0] == "add"
 
@@ -168,7 +173,7 @@ def test_a_removed_file_is_trashed(
     record = Catalog(db_path).get(REPORT)
     assert record.status == "trashed"
     assert record.trashed_at is not None
-    # The metadata survives the removal, ready for a restore.
+
     assert record.title == "report"
     assert record.chunk_count > 0
 
@@ -189,7 +194,7 @@ def test_a_trashed_file_comes_back(
     assert report.restored == [REPORT]
 
     record = Catalog(db_path).get(REPORT)
-    assert record.id == before  # the same row, not a new one
+    assert record.id == before
     assert record.status == "indexed"
     assert record.trashed_at is None
     assert record.title == "report"
@@ -206,7 +211,7 @@ def test_a_failed_ingest_is_recorded_and_retried(
     catalog = Catalog(db_path)
     assert catalog.get(MANUAL).status == "failed"
     assert "refused" in catalog.get(MANUAL).error_message
-    # ... and the rest of the folder is still processed.
+
     assert catalog.get(REPORT).status == "indexed"
 
     store.fail_on = set()
@@ -229,8 +234,7 @@ def test_a_pdf_without_text_is_recorded_as_failed(
     assert record.status == "failed"
     assert record.chunk_count is None
 
-    # Nothing was written for it, and it is offered to the extractor again on
-    # the next run — a scanned document costs local CPU and nothing else.
+    # A scan leaves nothing in the store, and a later run tries it again.
     assert "scans/scan.pdf" not in store.sources
     assert ("scans/scan.pdf", "No text extracted") in run(
         documents_dir, db_path, store
@@ -240,14 +244,12 @@ def test_a_pdf_without_text_is_recorded_as_failed(
 def test_a_failed_document_that_is_removed_is_trashed(
     documents_dir: Path, db_path: Path, store: FakeVectorStore
 ) -> None:
-    """A document with no vectors still has to trash cleanly.
+    """A document that failed and then went away is trashed.
 
-    A scanned PDF fails with nothing written, so it has a row and no chunks.
-    Removing the file then asks the store to delete vectors that were never
-    there — and the delete is not guarded at the call site, because the update
-    path must not re-add on top of stale chunks. A store that raises on an empty
-    match would leave this row failed forever, breaking every later run.
+    The file is here for the first run and gone for the second, which marks
+    the row as trashed instead of counting the document as failed again.
     """
+
     make_pdf(documents_dir / "scans" / "scan.pdf", "")
     run(documents_dir, db_path, store)
     (documents_dir / "scans" / "scan.pdf").unlink()
@@ -263,7 +265,7 @@ def test_an_interrupted_run_is_picked_up_again(
     documents_dir: Path, db_path: Path, store: FakeVectorStore
 ) -> None:
     run(documents_dir, db_path, store)
-    # What a run killed halfway through leaves behind.
+
     Catalog(db_path).set_status(MANUAL, "indexing")
 
     report = run(documents_dir, db_path, store)
@@ -275,7 +277,6 @@ def test_an_interrupted_run_is_picked_up_again(
 def test_a_row_without_a_hash_is_picked_up_again(
     documents_dir: Path, db_path: Path, store: FakeVectorStore
 ) -> None:
-    # A row created but never indexed: an add interrupted before the file was read.
     Catalog(db_path).add_file(MANUAL, "manual")
 
     report = run(documents_dir, db_path, store)
@@ -288,7 +289,6 @@ def test_a_row_without_a_hash_is_picked_up_again(
 def test_what_built_the_index_is_written_on_the_row(
     documents_dir: Path, db_path: Path, store: FakeVectorStore
 ) -> None:
-    """Nothing else carries it: not the file, and not the vectors."""
     run(documents_dir, db_path, store)
 
     record = Catalog(db_path).get(MANUAL)
@@ -299,12 +299,12 @@ def test_what_built_the_index_is_written_on_the_row(
 def test_a_document_indexed_by_an_older_reading_is_indexed_again(
     documents_dir: Path, db_path: Path, store: FakeVectorStore
 ) -> None:
-    """The file is the same file and its hash still matches.
+    """A document read by an older version of the reader is read again.
 
-    Only the fingerprint says that the code which made these vectors is not the
-    code in hand, so without it the index would go on answering from text the
-    reader would no longer produce.
+    The row is stamped with a reader this run does not use. The fingerprint
+    no longer matches, so the document is indexed once more.
     """
+
     run(documents_dir, db_path, store)
     restamp(
         documents_dir,
@@ -324,11 +324,12 @@ def test_a_document_indexed_by_an_older_reading_is_indexed_again(
 def test_a_document_indexed_by_another_model_is_indexed_again(
     documents_dir: Path, db_path: Path, store: FakeVectorStore
 ) -> None:
-    """The case that costs something, and the one nothing else can see.
+    """A document embedded by another model is indexed again.
 
-    Two models make two vector spaces, so a corpus moved to a new one has to be
-    made again — and no byte of any document has changed.
+    Vectors from two models cannot be compared, so a change of model means
+    the document has to be built once more.
     """
+
     run(documents_dir, db_path, store)
     restamp(
         documents_dir,
@@ -347,11 +348,12 @@ def test_a_document_indexed_by_another_model_is_indexed_again(
 def test_the_cut_is_part_of_the_fingerprint(
     documents_dir: Path, db_path: Path, store: FakeVectorStore
 ) -> None:
-    """A chunk size is part of what built an index, and the file has not moved.
+    """The chunk sizes are part of the fingerprint.
 
-    Changing it and not rebuilding would leave every answer citing chunks cut to
-    the sizes the settings no longer name.
+    A run with a different cut indexes both documents again and writes the
+    new numbers on the row.
     """
+
     run(documents_dir, db_path, store)
 
     report = run(documents_dir, db_path, store, chunk_size=300)
@@ -365,11 +367,16 @@ def test_the_cut_is_part_of_the_fingerprint(
 def test_a_row_with_no_fingerprint_is_indexed_again(
     documents_dir: Path, db_path: Path, store: FakeVectorStore
 ) -> None:
-    """A catalog written before the fingerprint existed says nothing about how
-    its index was built, so the first run after the change builds it."""
+    """A row written before the fingerprint existed is indexed again.
+
+    The hash and the counts are current here. Only the fields naming the
+    reader and the model are left empty.
+    """
+
     run(documents_dir, db_path, store)
-    # What a row indexed by an older version of this code looks like: current
-    # in every other way, and silent about what made it.
+
+    # Record the same file again, this time without naming what built the
+    # index.
     Catalog(db_path).record_indexed(
         MANUAL,
         file_hash=compute_file_hash(documents_dir / MANUAL),
@@ -416,7 +423,7 @@ def test_an_empty_folder_has_nothing_to_do(
     report = run(documents_dir, db_path, store)
 
     assert report == SyncReport()
-    assert documents_dir.is_dir()  # created on the way in
+    assert documents_dir.is_dir()
 
 
 def test_a_dry_run_changes_nothing(
@@ -449,19 +456,16 @@ def test_a_dry_run_reports_what_a_real_run_would_do(
     assert report.added == ["scans/scan.pdf"]
     assert store.events[seen:] == []
 
-    # The catalog still describes the last real run, so that run has all of
-    # this left to do.
+    # The catalog is opened for reading, so a file that was never created
+    # is not created now.
     catalog = Catalog(db_path, create=False)
     assert catalog.get(MANUAL).file_hash == indexed_hash
     assert catalog.get(REPORT).status == "indexed"
     assert catalog.get("scans/scan.pdf") is None
 
 
-# --- the descriptions, written as the documents are indexed ------------------
-#
-# What a description is, and how one is written, is tested in
-# `tests/test_descriptions.py`. Here it is the sync's part in it: which documents
-# a run describes, which it leaves alone, and what a call that fails costs.
+# The description of a document: which runs write one, which keep the one
+# already written, and what happens when the model cannot answer.
 
 
 def test_a_new_document_is_described_as_it_is_indexed(
@@ -471,7 +475,8 @@ def test_a_new_document_is_described_as_it_is_indexed(
 
     report = run(documents_dir, db_path, store, chat_model=model)
 
-    # One call per document, in catalog order, and each one kept.
+    # One call to the model per document, and each description lands on its
+    # own row.
     assert report.described == [MANUAL, REPORT]
     assert report.description_failed == []
     assert len(model.prompts) == 2
@@ -497,8 +502,11 @@ def test_a_run_with_no_model_describes_nothing(
 def test_a_dry_run_calls_no_model(
     documents_dir: Path, db_path: Path, store: FakeVectorStore
 ) -> None:
-    # A model with no replies at all: the first call to it would fail, so a run
-    # that reaches the description pass is a run that fails this test.
+    """A dry run writes no description, so no model is called.
+
+    The fake records every prompt it is given, and there should be none.
+    """
+
     model = FakeChatModel(replies=[])
 
     report = run(documents_dir, db_path, None, dry_run=True, chat_model=model)
@@ -517,8 +525,7 @@ def test_a_described_document_is_not_described_again(
         chat_model=FakeChatModel(replies=["A manual.", "A report."]),
     )
 
-    # A run that describes the same documents a second time is a run that spends
-    # a call per document for nothing, and this says it does not.
+    # The second run has nothing to describe, so the model is not called.
     model = FakeChatModel(replies=[])
     report = run(documents_dir, db_path, store, chat_model=model)
 
@@ -530,14 +537,18 @@ def test_a_described_document_is_not_described_again(
 def test_a_document_with_no_description_is_described_on_a_later_run(
     documents_dir: Path, db_path: Path, store: FakeVectorStore
 ) -> None:
-    # A library indexed before the sync wrote descriptions, or by a run told not
-    # to: nothing about the files says so, and the next run writes them.
+    """A document with no description gets one when a model turns up.
+
+    The first run has no model, the second has one. The documents
+    themselves are unchanged, so they are not indexed again.
+    """
+
     run(documents_dir, db_path, store)
 
     model = FakeChatModel(replies=["A manual.", "A report."])
     report = run(documents_dir, db_path, store, chat_model=model)
 
-    assert report.skipped == [MANUAL, REPORT]  # no vectors were written
+    assert report.skipped == [MANUAL, REPORT]
     assert report.described == [MANUAL, REPORT]
 
 
@@ -559,7 +570,7 @@ def test_a_changed_file_is_described_again(
     assert report.described == [MANUAL]
     assert Catalog(db_path).get(MANUAL).description == "A manual, second edition."
 
-    # The document that did not change was not described: one call, not two.
+    # Only the changed document was sent to the model.
     assert len(model.prompts) == 1
 
 
@@ -576,9 +587,8 @@ def test_a_changed_file_whose_description_fails_keeps_none(
 
     report = run(documents_dir, db_path, store, chat_model=FakeChatModel(replies=[]))
 
-    # The old description described text that is no longer in the document. Left
-    # in place it would be read as a description of this edition, which is the
-    # one outcome worth more than a blank.
+    # The model refuses the newer text, and the description written for the
+    # older one goes with it.
     assert report.updated == [MANUAL]
     assert Catalog(db_path).get(MANUAL).description is None
 
@@ -592,7 +602,7 @@ def test_a_document_indexed_again_for_its_fingerprint_keeps_its_description(
         store,
         chat_model=FakeChatModel(replies=["A manual.", "A report."]),
     )
-    # Another reader or another cut: the same file, indexed again.
+
     restamp(documents_dir, db_path, MANUAL, indexer="other-reader|1/1")
 
     model = FakeChatModel(replies=[])
@@ -631,12 +641,12 @@ def test_a_restored_document_keeps_its_description(
 def test_a_description_that_cannot_be_written_leaves_the_document_indexed(
     documents_dir: Path, db_path: Path, store: FakeVectorStore
 ) -> None:
-    # Every call raises: a key that stopped working, an endpoint that is down.
+    """A description that cannot be written does not fail the ingest."""
     report = run(documents_dir, db_path, store, chat_model=FakeChatModel(replies=[]))
 
     assert report.described == []
     assert [path for path, _ in report.description_failed] == [MANUAL, REPORT]
-    assert report.failed == []  # the documents themselves are not the failure
+    assert report.failed == []
 
     catalog = Catalog(db_path)
     for source in (MANUAL, REPORT):

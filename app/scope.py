@@ -1,10 +1,11 @@
-"""What a question is asked of: the whole library, a category, or some documents.
+"""The set of documents a question is asked of.
 
-The console can be pointed at less than everything, and this is the one place
-that turns that into the documents a search is restricted to. Everything here is
-a catalog read: resolving a scope never writes anywhere and never touches the
-vectors, which is what keeps moving a document between categories from costing a
-re-index.
+A scope can be the whole library, one category, one document or a list of
+documents. Besides the sources it carries the label a console prints and the
+descriptions that go into the context of the answer.
+
+`resolve_scope` builds one from the arguments a command was given, and
+`build_scoped_retriever` turns it into the retriever that searches it.
 """
 
 from __future__ import annotations
@@ -22,22 +23,11 @@ from app.vectorstore import WholeDocumentRetriever, build_retriever, get_vectors
 
 @dataclass(frozen=True)
 class Scope:
-    """Which documents a question is asked of.
+    """The documents a question is asked of, and what is known about them.
 
-    `sources` is what the search is narrowed to — the same value the chunks carry
-    as `source`, which is what the vector store is filtered by — and None is the
-    whole library, which is not a list of everything but no restriction at all.
-    `documents` is what the scope covers, which is the same list except in that
-    one case: the whole library has no filter to read them off, so they come from
-    the catalog. The two are kept apart because they answer different questions.
-    A search wants to know what to filter by, and an answer wants to be told what
-    was searched: asked which documents there are, a model holding nothing but the
-    passages in front of it names the one they came from. `descriptions` is what
-    the catalog says about those documents, for the ones that have been described:
-    the same argument one step further, because asked what the documents contain
-    the passages are a sample of the answer rather than the answer. `chunks` is
-    the chunk count of the one document a whole-document scope reads, and is None
-    otherwise.
+    `sources` holds the document paths, and is None when the scope is the whole
+    library. `documents` holds the same paths in the order they were given.
+    `descriptions` pairs a path with the description the catalog wrote for it.
     """
 
     sources: tuple[str, ...] | None
@@ -49,26 +39,16 @@ class Scope:
 
     @property
     def ranked(self) -> bool:
-        """Whether a question of this scope comes back as a ranking.
+        """Whether the search returns a ranking of passages.
 
-        A document small enough to be read whole is handed over in reading order:
-        it is all of it, and the order it is written in is the only order it has.
-        A measure of where in a ranking something was found has nothing to say
-        about a scope like that, and the commands that print one ask this rather
-        than working the condition out again and disagreeing with this module.
-        Everything else is the similarity search, which is a ranking.
+        It does, unless the scope is one document small enough to be read whole.
+        That case returns every chunk of the document in reading order.
         """
         return not (self.whole_document and self.sources and self.chunks)
 
 
 def whole_library(catalog: Catalog, *, config: Settings) -> Scope:
-    """Everything indexed, which is what a question without a scope searches.
-
-    Asked of the catalog, not left empty: the search is given no filter, but the
-    documents it ends up covering are read from the catalog all the same, because
-    the answer has to be able to say what was searched — and what it can say about
-    them goes with them.
-    """
+    """A scope covering every indexed document."""
     documents = _indexed(catalog)
 
     return Scope(
@@ -84,13 +64,10 @@ def whole_library(catalog: Catalog, *, config: Settings) -> Scope:
 def _described(
     catalog: Catalog, documents: tuple[str, ...], *, budget: int
 ) -> tuple[tuple[str, str], ...]:
-    """What the catalog says about each document, while it fits a budget.
+    """The descriptions to put in the context, within a character budget.
 
-    The documents are named in the context either way, so a scope too large to
-    describe loses the descriptions and nothing else. What does not fit is left
-    out in the order the scope lists the documents, and `budget` of 0 — or a
-    description longer than it, which the prompt keeps from happening — leaves
-    them all out.
+    Documents are taken in the order given until the budget runs out. The first
+    description that does not fit ends the walk.
     """
     if budget <= 0 or not documents:
         return ()
@@ -115,12 +92,7 @@ def _described(
 
 
 def _indexed(catalog: Catalog) -> tuple[str, ...]:
-    """Every document a search can reach, in the catalog's own order.
-
-    The rule `sources_in_category` follows, and for the same reason: a document
-    that is trashed or failed to index has no vectors, so naming it would describe
-    a search that cannot happen.
-    """
+    """The paths of the indexed documents, in catalog order."""
     return tuple(
         record.path for record in catalog.all() if record.status == "indexed"
     )
@@ -129,42 +101,35 @@ def _indexed(catalog: Catalog) -> tuple[str, ...]:
 def as_source(path: str, documents_dir: Path) -> str:
     """A document path as the catalog holds it, from however it was written.
 
-    `scripts/delete.py` takes its arguments as catalog keys and nothing else. A
-    scope is worth the tolerance: the two spellings a person actually types are
-    the path relative to the documents folder and the path from the shell, and a
-    wrong guess here would produce a search over nothing rather than an error
-    naming the document that was not found.
+    The two spellings a person types are the path relative to the documents
+    folder and the path from the shell. Both are accepted. A path that turns out
+    to be outside the folder is returned as it was typed, so that the lookup
+    fails afterwards and names the document it could not find.
     """
     candidate = Path(path)
     try:
         resolved = candidate.resolve()
         return resolved.relative_to(Path(documents_dir).resolve()).as_posix()
     except (OSError, ValueError):
-        # Not a file under the documents folder, or not a path at all. Left as
-        # typed, so that the lookup fails and says which document it could not
-        # find, rather than failing somewhere less clear.
         return candidate.as_posix()
 
 
 def document_path(source: str, documents_dir: Path) -> Path:
-    """The file a document path names, or a refusal.
+    """The file a document path names, or a ValueError.
 
-    The other half of `as_source` above, and the opposite of it in the one way
-    that matters: a path that leaves the documents folder is refused here instead
-    of being handed back as it was typed. This is where a string from outside the
-    program becomes a file to open, so this is where the folder is enforced.
+    A path that leaves the documents folder is refused here. This is where a
+    string from outside the program becomes a file to open, so this is where the
+    folder is enforced.
 
-    The catalog is deliberately no part of the answer. The folder is what decides
-    whether a document is here, and a file sitting in it can be read whether or
-    not a sync has indexed it; asking the catalog would add a database read to
-    every request to answer a question the file already answers.
+    The catalog is not consulted. The folder decides whether a document is here,
+    and a file sitting in it can be read whether or not a sync has indexed it.
     """
     root = Path(documents_dir).resolve()
 
     try:
-        # Left of the folder is outside it, and an absolute path replaces the
-        # folder rather than joining it — both end up refused by the line after,
-        # which is the point of resolving before comparing.
+        # An absolute path replaces the folder instead of joining it, and a path
+        # with enough `..` climbs out of it. Comparing the resolved path with the
+        # folder catches both.
         resolved = (root / source).resolve()
         resolved.relative_to(root)
     except (OSError, ValueError) as exc:
@@ -184,17 +149,15 @@ def resolve_scope(
     document: str | None = None,
     documents: Sequence[str] = (),
 ) -> Scope:
-    """Turn what was asked for into the documents to search.
+    """Build the scope a command asked for.
 
-    Raises `LookupError` rather than returning an empty scope: a search over no
-    documents answers every question with "the documents do not cover this",
-    which is the one answer this project exists not to give by accident.
+    One of `category`, `document` and `documents` may be given, and giving more
+    than one is an error. With none of them the scope is the whole library.
     """
+    # A scope is one thing at a time.
     given = [
         name
         for name, was_given in (
-            # `is not None`, not truth: an empty category is a scope of its own —
-            # the documents at the root, which are in no category.
             ("category", category is not None),
             ("document", document is not None),
             ("documents", bool(documents)),
@@ -229,28 +192,11 @@ def resolve_scope(
 
 
 def build_scoped_retriever(scope: Scope, *, k: int | None = None) -> BaseRetriever:
-    """The retriever these documents are searched through.
+    """The retriever that searches this scope.
 
-    A document small enough to be read whole goes through the whole-document
-    retriever, which hands back all of it in reading order; everything else — a
-    category, a selection, one document too long for the budget — is the
-    similarity search the library has always used, with the scope's documents as
-    the one filter.
-
-    The graph takes either one the same way, which is the whole reason a scope
-    changes nothing about the graph.
-
-    Reranking therefore applies to the second path and not the first, and that is
-    a decision rather than an oversight: a document is read whole so that a
-    question can reach a passage the top k would never have ranked, and putting a
-    ranking back on top of it would drop exactly those. `RERANK=on` is not uniform
-    across scopes — see `app/rerank.py`.
-
-    `k` is how many passages the search is asked for, and only the search has an
-    opinion about it: the whole-document path ignores it, because what it returns
-    is the document rather than a number of passages from it. Left unset it is
-    whatever the console is configured for, which is what every caller but one
-    wants.
+    A scope that is read whole gets a `WholeDocumentRetriever`. Every other scope
+    gets the ordinary search, limited to its sources. `k` is passed on to that
+    search and defaults to RETRIEVAL_K.
     """
     if not scope.ranked:
         return WholeDocumentRetriever(
@@ -263,6 +209,7 @@ def build_scoped_retriever(scope: Scope, *, k: int | None = None) -> BaseRetriev
 
 
 def _category_scope(catalog: Catalog, name: str | None, *, config: Settings) -> Scope:
+    """The scope of one category, or of the documents that have none."""
     sources = tuple(catalog.sources_in_category(name))
 
     if not sources:
@@ -288,12 +235,11 @@ def _category_scope(catalog: Catalog, name: str | None, *, config: Settings) -> 
 def _one_document_scope(
     catalog: Catalog, record: DocumentRecord, config: Settings
 ) -> Scope:
-    """One document, read whole when it is small enough to be handed over.
+    """The scope of one document.
 
-    The estimate is a pre-flight one, from numbers the catalog already holds, so
-    no search is run to decide. It over-counts, because consecutive chunks
-    overlap; that direction is the safe one, and the document simply falls back
-    to a similarity search sooner than it strictly had to.
+    The document is read whole when its estimated size fits within
+    WHOLE_DOCUMENT_MAX_CHARS. The estimate is the number of chunks times the
+    chunk size.
     """
     budget = config.whole_document_max_chars
     estimate = (record.chunk_count or 0) * config.chunk_size
@@ -319,6 +265,7 @@ def _one_document_scope(
 
 
 def _lookup(catalog: Catalog, source: str) -> DocumentRecord:
+    """The catalog record for a source, or an error saying why there is none."""
     record = catalog.get(source)
 
     if record is None:

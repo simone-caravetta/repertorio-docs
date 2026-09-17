@@ -1,10 +1,8 @@
-"""The settings that decide which store a command is talking to.
+"""Tests for the config helpers that name files and stores.
 
-The catalog is derived from the store rather than named beside it, so that
-switching store is one line. These tests are on the derivation itself: the
-class defaults are read from the environment once, when `Settings` is defined,
-so a test that went through `Settings()` would inherit the `.env` of whoever
-runs the suite.
+Each vector store gets its own default catalog file, so that switching from
+one to the other does not read the rows of the first. The other helpers
+shorten a path for display and describe where the vectors are kept.
 """
 
 from __future__ import annotations
@@ -23,12 +21,7 @@ from tests.helpers import make_settings
 
 
 def test_the_two_stores_do_not_share_a_catalog() -> None:
-    """One catalog per store, or the switch leaves a sync that does nothing.
-
-    Every hash in one store's catalog matches the files regardless of where the
-    vectors went, so a shared catalog reports a run with no work to do and
-    leaves the store it now points at empty.
-    """
+    """The default catalog is not the same file for the two stores."""
     assert _default_catalog_path("chroma") != _default_catalog_path("pinecone")
 
 
@@ -37,20 +30,25 @@ def test_the_two_stores_do_not_share_a_catalog() -> None:
     [
         ("chroma", "data/catalog-chroma.sqlite3"),
         ("pinecone", "data/catalog.sqlite3"),
-        # The value reaches the settings as typed by hand in a `.env`.
+
+        # The store name is matched without case and without spaces around it.
         ("  Chroma ", "data/catalog-chroma.sqlite3"),
         ("CHROMA", "data/catalog-chroma.sqlite3"),
-        # An unknown name still gets a catalog: refusing it is `get_vectorstore`'s
-        # job, and it can say so far better than a missing file could.
+
+        # Any other name falls back to the plain catalog.
         ("anything-else", "data/catalog.sqlite3"),
     ],
 )
 def test_the_catalog_is_chosen_from_the_store(store: str, expected: str) -> None:
+    """Each store name maps to the catalog file it uses."""
     assert _default_catalog_path(store) == expected
 
 
 def test_the_description_names_where_the_vectors_are() -> None:
-    """A command prints this before doing anything, so it has to be specific."""
+    """The chroma description carries the collection name.
+
+    The pinecone description carries the index name.
+    """
     chroma = describe_vector_store(
         make_settings(vector_store="chroma", chroma_collection="passages")
     )
@@ -64,10 +62,9 @@ def test_the_description_names_where_the_vectors_are() -> None:
 
 
 def test_the_description_follows_the_settings_it_is_given() -> None:
-    """Read from the argument, not the module-level `settings`.
+    """The description is built from the settings handed to it.
 
-    A command replaces its own `settings` with one built for the run; a
-    description that ignored it would name the store the command is not using.
+    A caller that passes its own settings gets a description of those.
     """
     assert describe_vector_store(make_settings(vector_store="chroma")).startswith(
         "chroma"
@@ -75,10 +72,12 @@ def test_the_description_follows_the_settings_it_is_given() -> None:
 
 
 def test_a_path_under_the_project_reads_relative() -> None:
+    """A path inside the project is shortened to its path from the root."""
     assert short_path(PROJECT_ROOT / "data" / "chroma") == "data/chroma"
 
 
 def test_a_path_outside_the_project_is_left_alone() -> None:
+    """A path elsewhere is printed as it was given."""
     outside = Path("/somewhere/else/catalog.sqlite3")
 
     assert short_path(outside) == str(outside)

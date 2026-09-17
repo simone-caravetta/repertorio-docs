@@ -1,15 +1,13 @@
-"""Measure the library against questions whose answers are known.
+"""Measure the search and the answers over a set of questions.
 
-A question set names, for each question, the document the answer should come from
-and optionally the page, and optionally what a correct answer says. This runs
-them: the search first, which is the measurement retrieval quality is made of and
-costs nothing but an embedding per question, and then, if asked, an answer written
-from the passages that search returned and read against what the set expected.
+Every question in the set names the document that answers it, and sometimes the
+page as well, so what the search returned can be compared with what was
+expected. The retrieval numbers come from that comparison alone and cost nothing
+to produce.
 
-`--answers` writes an answer to each question, one model call each. `--judge`
-adds a second call per question, to a model that reads the answer against its
-context and says whether every claim in it is one the context supports — the
-faithfulness number, and the only part of a run that costs as much as it does.
+An answer to each question is written only with `--answers`, and a model reads
+each answer against the passages it was written from only with `--judge`. Both
+of those call the model once or twice per question.
 """
 
 from __future__ import annotations
@@ -48,10 +46,13 @@ def evaluate(
     chat_model: BaseChatModel | None = None,
     judge_model: BaseChatModel | None = None,
 ) -> EvalReport:
-    """Run a question set against a scope, print what it found, and return it."""
-    # The folder the run was pointed at, as a config rather than as an argument:
-    # a scope resolves the paths a question set writes against it, so pointing the
-    # command at another folder has to move what a path is relative to.
+    """Run the question set and return what came back.
+
+    The set and the scope are resolved first, so that a set which cannot be read
+    or a category that is not there stops the run before anything is searched.
+    With `answers` a model writes an answer to each question, and with `judge`
+    the answers are read against the passages they were written from.
+    """
     config = replace(
         settings, documents_dir=Path(documents_dir or settings.documents_dir)
     )
@@ -60,9 +61,9 @@ def evaluate(
 
     try:
         questions = load_questions(questions_path)
-        # The console's own resolution: a set asked of a category or of one
-        # document is measured through the same scope the question would be asked
-        # in, which is the only way the numbers are about the console.
+
+        # The scope is resolved before the first search, so that a name the
+        # catalog does not know stops the run with a message.
         scope = resolve_scope(
             Catalog(db_path, create=False),
             config=config,
@@ -71,11 +72,9 @@ def evaluate(
             documents=documents or [],
         )
     except (LookupError, RuntimeError, ValueError) as exc:
-        # A key that is missing, a category that is not there, a question set with
-        # a comma out of place: a message to read, not a stack trace.
+        # The reason goes to the console as it is, and the run stops here.
         raise SystemExit(str(exc)) from exc
 
-    # Judging an answer needs an answer, so asking for the judge asks for both.
     answers = answers or judge
 
     print(f"store     {describe_vector_store(config)}")
@@ -97,23 +96,15 @@ def evaluate(
 
     report = run_evals(
         questions,
-        # The search is asked for the wider of the console's k and the cutoff the
-        # ranking is read to. Asking for five and reporting nDCG@10 would be a
-        # number about passages that were never retrieved; asking for ten and
-        # reporting the hit-rate over five is the same measurement it always was,
-        # because the first five of ten are the five of five. A whole-document
-        # scope ignores this — what it returns is the document, not a count of
-        # passages from it.
+        # The retriever is asked for at least NDCG_CUTOFF passages, because the
+        # nDCG is measured over the first ten of them.
         retriever=build_scoped_retriever(
             scope, k=max(config.retrieval_k, NDCG_CUTOFF)
         ),
-        # ... and what was *found* is read over the console's own five, because
-        # that is what the answer is written from. Asking the search for ten is a
-        # measurement instrument reaching wider than the console so that a
-        # ranking has an end to be read to; letting the four numbers about
-        # finding something be read over that wider pool would report documents
-        # found and never shown. A whole-document scope is read whole: its
-        # passages are the document, and there is no fifth of it to stop at.
+        # The ranking numbers are read from the first RETRIEVAL_K passages,
+        # which is how many the console shows. A scope that is read whole comes
+        # back in reading order, so nothing is cut off here and the report says
+        # so through `ranked`.
         read_at=config.retrieval_k if scope.ranked else None,
         in_scope=scope.documents,
         descriptions=dict(scope.descriptions),
@@ -126,12 +117,10 @@ def evaluate(
 
 
 def print_report(report: EvalReport, *, ranked: bool = True) -> None:
-    """What the run found, question by question and then added up.
+    """Print one line per question, then the numbers over the whole set.
 
-    `ranked` says whether the passages came back as a ranking. A whole-document
-    scope hands over the document in reading order, so a number about where in a
-    ranking the answer sat means nothing for it and is left out rather than
-    printed as a figure that looks like the others.
+    The nDCG is left out when `ranked` is false, because the passages came back
+    in reading order and their order says nothing about the search.
     """
     summary = summarise(report)
 
@@ -166,11 +155,10 @@ def print_report(report: EvalReport, *, ranked: bool = True) -> None:
 
 
 def describe_result(result: QuestionResult) -> str:
-    """What one question did, on one line.
+    """One question as a line, with what was found and what was written.
 
-    The three measures are independent and each is left out when it does not
-    apply: a question with no page to find is not a page that was missed, and a
-    question the library is not expected to answer has no document to have found.
+    Every part that was measured appears on the line. A question the scope left
+    out says so, and a question that failed says why.
     """
     question = result.question
 
@@ -204,19 +192,17 @@ def describe_result(result: QuestionResult) -> str:
 
 
 def _found(label: str, rank: int | None) -> str:
+    """Where the passage was found, as 'hit' with its position or 'miss'."""
     return f"{label}hit {rank}" if rank else f"{label}miss"
 
 
 def _rate(part: int, whole: int) -> str:
-    """A share of the questions, as a count and the percentage it is.
-
-    Only ever called with questions behind it: a measure with nothing to be taken
-    over is left out of the line rather than printed as a rate of nothing.
-    """
+    """One count over another, as a share of a hundred, rounded."""
     return f"{part}/{whole} ({round(100 * part / whole)}%)"
 
 
 def parse_args() -> argparse.Namespace:
+    """The command line, with the scope arguments checked against one another."""
     parser = argparse.ArgumentParser(
         description=(
             "Ask a set of questions of the library and measure what the search "
@@ -275,8 +261,8 @@ def parse_args() -> argparse.Namespace:
 
     args = parser.parse_args()
 
-    # `--documents` takes several values, so argparse cannot be asked to make
-    # these exclusive; said here instead.
+    # The three scope arguments are alternatives. More than one of them leaves
+    # no way to tell which scope was meant.
     given = [
         name
         for name, was_given in (
@@ -293,6 +279,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Run the eval command."""
     args = parse_args()
     evaluate(
         questions_path=args.questions,

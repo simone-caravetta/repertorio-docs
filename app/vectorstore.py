@@ -1,3 +1,14 @@
+"""The vector store and the retriever that searches it.
+
+A store keeps one embedding per chunk of text. Pinecone is the hosted one and
+Chroma keeps the vectors in a folder on this machine. `build_retriever` returns
+the retriever the rest of the project searches with, which is a similarity
+search, or that search refined by the reranker when reranking is on.
+
+A scope that covers one small document is served by `WholeDocumentRetriever`,
+which hands over every chunk of it in reading order.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -16,31 +27,38 @@ from app.config import settings, validate_api_keys
 from app.embeddings import get_embeddings
 from app.ingestion import whole_number
 
-# Any text will do: only the length of the vector that comes back is read.
+# Embedded once to learn how many dimensions the model produces. The words
+# themselves carry no meaning.
 DIMENSION_PROBE = "dimension probe"
 
-# The stores this project can be pointed at, and the default among them.
+# The two values VECTOR_STORE accepts.
 STORES = ("pinecone", "chroma")
 
 
 def get_pinecone_client() -> Pinecone:
+    """The Pinecone client, once the key has been checked."""
     validate_api_keys()
     return Pinecone(api_key=settings.pinecone_api_key)
 
 
 @lru_cache(maxsize=1)
 def get_embedding_dimension() -> int:
-    """Measure how long a vector the embedding model produces.
+    """How many dimensions the current embedding model produces.
 
-    Measured rather than declared, so that the number cannot drift away from the
-    model: a declared one is wrong silently, which is how a whole index ends up
-    written in a vector space nothing can read.
+    The only way to ask a model this is to embed something and look at the
+    result, so one short text is embedded. Cached because it costs a model call.
     """
     return len(get_embeddings().embed_query(DIMENSION_PROBE))
 
 
 def ensure_index() -> None:
-    """Create the Pinecone index, or check that the one there can be reused."""
+    """Create the Pinecone index when it is missing, and check its size.
+
+    An index built by another embedding model cannot be reused, so a dimension
+    that does not match raises an error with the two ways out. Either the model
+    goes back to what the index was built with, or PINECONE_INDEX_NAME points at
+    a new name and the sync runs again.
+    """
     pc = get_pinecone_client()
     name = settings.pinecone_index_name
     dimension = get_embedding_dimension()
@@ -69,11 +87,7 @@ def ensure_index() -> None:
 
 
 def _pinecone_store() -> PineconeVectorStore:
-    """The hosted index.
-
-    Pinecone deletes by metadata filter natively, so this is the store the
-    document lifecycle was written against and it needs nothing added to it.
-    """
+    """The hosted store, with the index created first when it is missing."""
     ensure_index()
     pc = get_pinecone_client()
     index = pc.Index(settings.pinecone_index_name)
@@ -86,7 +100,7 @@ def _pinecone_store() -> PineconeVectorStore:
 
 
 def _chroma_store() -> VectorStore:
-    """The local store, imported only when one is asked for."""
+    """The store kept in a folder on this machine."""
     from app.chroma_store import open_chroma_store
 
     return open_chroma_store(
@@ -97,20 +111,21 @@ def _chroma_store() -> VectorStore:
 
 
 def vector_count(store: VectorStore) -> int | None:
-    """How many vectors the store holds, or None if it cannot be read.
+    """How many vectors the store holds, or None when it cannot say.
 
-    Best effort on purpose, and used only to warn: a store that cannot say how
-    many vectors it holds must not be the reason a run fails.
+    Each store reports the count in its own way. A store that cannot be reached
+    returns None so that a command which only wanted to print the number goes on
+    working.
     """
     collection = getattr(store, "_collection", None)
-    if collection is not None:  # the local store
+    if collection is not None:
         try:
             return int(collection.count())
         except Exception:  # noqa: BLE001 - a diagnostic never breaks the run
             return None
 
     index = getattr(store, "_index", None)
-    if index is None:  # not a store this helper knows
+    if index is None:
         return None
     try:
         stats = index.describe_index_stats().to_dict()
@@ -122,12 +137,7 @@ def vector_count(store: VectorStore) -> int | None:
 
 @lru_cache(maxsize=1)
 def get_vectorstore() -> VectorStore:
-    """The configured store, whichever it is.
-
-    `settings` is read here, in the body, and not as a default argument: the
-    tests replace it on this module, and a default would be bound once at
-    definition time and keep pointing at the machine's own `.env`.
-    """
+    """The store named by VECTOR_STORE, built once per process."""
     name = settings.vector_store.strip().lower()
     if name == "pinecone":
         return _pinecone_store()
@@ -145,25 +155,13 @@ def build_retriever(
     k: int | None = None,
     sources: Sequence[str] | None = None,
 ) -> BaseRetriever:
-    """A retriever over the configured store, optionally narrowed to documents.
+    """The retriever the rest of the project searches with.
 
-    `sources=None` searches the whole library, which is what every command did
-    before there was a way to narrow it. A sequence becomes the one filter shape
-    both stores answer: `$in` over `source`, the per-document key the chunks
-    already carry and that the lifecycle already deletes by. What is deliberately
-    not offered is a general `filter=` dictionary: the two stores do not spell
-    filters the same way — `app.chroma_store` refuses to translate between them
-    for deletion, and the same caution applies to searching — so one shape, tested
-    on both, beats a passthrough that nothing checks.
+    `k` is how many passages to return and defaults to RETRIEVAL_K. `sources`
+    limits the search to those documents when it is given.
 
-    `k` is what comes back, which is not always what the store is asked for: with
-    reranking on, the search is asked for `rerank_candidates` and the reranker
-    keeps `k` of them. A caller that wants more than the candidate pool gets what
-    it asked for, since a search cannot rerank what it was never handed.
-
-    Not cached, unlike `get_retriever`: the arguments are the cache key, and the
-    store underneath is already cached, so a retriever costs nothing worth
-    keeping.
+    With reranking on, the store is asked for RERANK_CANDIDATES passages and the
+    result is wrapped so that only the best `k` reach the caller.
     """
     wanted = settings.retrieval_k if k is None else k
     reranked = rerank.enabled(settings)
@@ -191,15 +189,9 @@ def build_retriever(
 class WholeDocumentRetriever(BaseRetriever):
     """Every chunk of one document, in reading order.
 
-    A document that fits in the context window is served better by all of it than
-    by the handful of passages a similarity search returns: the question may be
-    about something the top k never reaches. The text lives in the vector store
-    and nowhere else, so this is still a search — one that asks for all of it.
-    `k` is the document's chunk count, which the catalog knows exactly.
-
-    The chunks come back ranked by similarity and are put back into reading order
-    here, because a document handed over as a pile of shuffled pages reads as
-    one.
+    The store still runs the search, with a filter that keeps this document
+    alone and a `k` large enough to reach all of its chunks. The chunks are then
+    put back in the order they appear in the document.
     """
 
     store: VectorStore
@@ -216,12 +208,10 @@ class WholeDocumentRetriever(BaseRetriever):
 
 
 def _position(chunk: Document) -> tuple[int, int]:
-    """Where a chunk sits in its document: page first, then position on it.
+    """Where a chunk sits in its document, as a sort key.
 
-    A chunk whose page the store did not give back as a number sorts as the first
-    page and the first position, which leaves the order it arrived in; the sort
-    is here to undo a similarity ranking, and a chunk with no place is not one it
-    can place.
+    The page comes first and the position within the page second. A chunk that
+    carries neither value counts as the first.
     """
     return (
         whole_number(chunk.metadata.get("page")) or 0,
@@ -231,5 +221,5 @@ def _position(chunk: Document) -> tuple[int, int]:
 
 @lru_cache(maxsize=1)
 def get_retriever() -> BaseRetriever:
-    """The retriever the graph falls back on: the whole library, top k."""
+    """The default retriever, built once per process."""
     return build_retriever()

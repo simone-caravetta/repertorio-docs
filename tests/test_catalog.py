@@ -1,3 +1,11 @@
+"""Tests for the SQLite catalog that records every document.
+
+The catalog keeps one row per document, holding its path, title, category,
+status and the counts from its last indexing run. These tests cover reading
+and writing those rows, the upgrade of a database that was written before
+two of the columns existed, and the helpers that turn a path into a category.
+"""
+
 from __future__ import annotations
 
 import sqlite3
@@ -13,10 +21,8 @@ from app.catalog import (
     normalise_category,
 )
 
-# The documents table as a version of this file that kept no fingerprint wrote
-# it. Written out here rather than read from the module's own SCHEMA: the test
-# is about a database whose columns are the older ones, and taking the columns
-# from the code under test would make it agree with whatever that code says.
+# A documents table as it was written before the columns recording the
+# indexer and the embedding model were added.
 _OLD_SCHEMA = """
 CREATE TABLE documents (
     id            INTEGER PRIMARY KEY,
@@ -37,7 +43,7 @@ CREATE TABLE documents (
 
 
 def old_catalog(db_path: Path) -> Path:
-    """A library indexed by an older version: one row, and no fingerprint."""
+    """Write the older schema to a database and add one indexed row."""
     with sqlite3.connect(db_path) as conn:
         conn.executescript(_OLD_SCHEMA)
         conn.execute(
@@ -49,17 +55,15 @@ def old_catalog(db_path: Path) -> Path:
 
 
 def columns_of(db_path: Path) -> set[str]:
+    """Return the names of the columns the documents table has."""
     with sqlite3.connect(db_path) as conn:
         return {row[1] for row in conn.execute("PRAGMA table_info(documents)")}
 
 
 def test_an_older_catalog_still_reads(tmp_path: Path) -> None:
-    """A library indexed before the fingerprint existed opens and is read.
+    """A row written before the fingerprint columns existed still reads.
 
-    `CREATE TABLE IF NOT EXISTS` leaves the table it finds exactly as it was, so
-    the columns added since are not there to be selected. The row has to come
-    back with them absent — which is also the useful answer: a document with no
-    fingerprint is one the next sync indexes again.
+    Both of those columns come back as None for it.
     """
     record = Catalog(old_catalog(tmp_path / "old.sqlite3")).get("a.pdf")
 
@@ -72,7 +76,10 @@ def test_an_older_catalog_still_reads(tmp_path: Path) -> None:
 
 
 def test_an_older_catalog_is_given_the_columns_it_lacks(tmp_path: Path) -> None:
-    """The migration adds, and changes nothing that was already there."""
+    """Opening the database for writing adds what the table is missing.
+
+    The row that was already there keeps its values.
+    """
     db_path = old_catalog(tmp_path / "old.sqlite3")
 
     Catalog(db_path).set_status("a.pdf", "queued")
@@ -82,10 +89,9 @@ def test_an_older_catalog_is_given_the_columns_it_lacks(tmp_path: Path) -> None:
 
 
 def test_a_catalog_opened_to_read_is_left_alone(tmp_path: Path) -> None:
-    """`create=False` promises to write nothing, and a migration is a write.
+    """A catalog opened with create=False reads the rows as they are.
 
-    A dry run opens the catalog this way, and it is the run most likely to meet
-    a library that has not been migrated yet.
+    The file on disk keeps the schema it had.
     """
     db_path = old_catalog(tmp_path / "old.sqlite3")
 
@@ -97,7 +103,7 @@ def test_a_catalog_opened_to_read_is_left_alone(tmp_path: Path) -> None:
 
 
 def test_record_indexed_stores_what_built_the_index(catalog: Catalog) -> None:
-    """The one record of how the vectors were made: nothing else carries it."""
+    """The indexer and the embedding model are written onto the row."""
     catalog.add_file("a.pdf", "a")
 
     catalog.record_indexed(
@@ -115,7 +121,7 @@ def test_record_indexed_stores_what_built_the_index(catalog: Catalog) -> None:
 
 
 def test_a_row_indexed_without_a_fingerprint_has_none(catalog: Catalog) -> None:
-    """Absent is the honest record for the callers that have no run behind them."""
+    """Those two arguments are optional and stay unset when left out."""
     catalog.add_file("a.pdf", "a")
 
     catalog.record_indexed("a.pdf", file_hash="abc", page_count=1, chunk_count=1)
@@ -125,14 +131,16 @@ def test_a_row_indexed_without_a_fingerprint_has_none(catalog: Catalog) -> None:
 
 
 def test_opening_twice_keeps_the_schema(tmp_path: Path) -> None:
+    """A second catalog over the same file finds the rows already there."""
     db_path = tmp_path / "catalog.sqlite3"
     Catalog(db_path).add_file("a.pdf", "a")
-    Catalog(db_path)  # the DDL must be re-runnable
+    Catalog(db_path)
 
     assert [record.path for record in Catalog(db_path).all()] == ["a.pdf"]
 
 
 def test_add_and_get(catalog: Catalog) -> None:
+    """A new row starts queued, with nothing counted yet."""
     catalog.add_file("manuals/manual.pdf", "manual")
 
     record = catalog.get("manuals/manual.pdf")
@@ -148,10 +156,12 @@ def test_add_and_get(catalog: Catalog) -> None:
 
 
 def test_get_unknown_path(catalog: Catalog) -> None:
+    """A path the catalog does not hold reads as None."""
     assert catalog.get("nope.pdf") is None
 
 
 def test_the_same_path_cannot_be_added_twice(catalog: Catalog) -> None:
+    """Adding the same path a second time raises."""
     catalog.add_file("a.pdf", "a")
 
     with pytest.raises(ValueError, match="Already in the catalog"):
@@ -159,6 +169,7 @@ def test_the_same_path_cannot_be_added_twice(catalog: Catalog) -> None:
 
 
 def test_the_database_rejects_an_unknown_status(catalog: Catalog) -> None:
+    """The status column only accepts the values in STATUSES."""
     catalog.add_file("a.pdf", "a")
 
     with pytest.raises(sqlite3.IntegrityError):
@@ -166,6 +177,7 @@ def test_the_database_rejects_an_unknown_status(catalog: Catalog) -> None:
 
 
 def test_every_known_status_is_accepted(catalog: Catalog) -> None:
+    """Each status in STATUSES can be written to a row."""
     catalog.add_file("a.pdf", "a")
 
     for status in STATUSES:
@@ -175,11 +187,13 @@ def test_every_known_status_is_accepted(catalog: Catalog) -> None:
 
 
 def test_writing_to_an_unknown_document_raises(catalog: Catalog) -> None:
+    """Recording a failure for a path that is not there raises."""
     with pytest.raises(KeyError, match="No such document"):
         catalog.record_failed("ghost.pdf", "boom")
 
 
 def test_record_indexed_stores_the_counts(catalog: Catalog) -> None:
+    """The hash and the page and chunk counts land on the row."""
     catalog.add_file("a.pdf", "a")
 
     catalog.record_indexed(
@@ -196,6 +210,7 @@ def test_record_indexed_stores_the_counts(catalog: Catalog) -> None:
 
 
 def test_record_indexed_clears_the_previous_failure(catalog: Catalog) -> None:
+    """A document that failed and was trashed comes back clean once indexed."""
     catalog.add_file("a.pdf", "a")
     catalog.record_failed("a.pdf", "boom")
     catalog.trash("a.pdf")
@@ -210,6 +225,7 @@ def test_record_indexed_clears_the_previous_failure(catalog: Catalog) -> None:
 
 
 def test_record_failed_keeps_the_row(catalog: Catalog) -> None:
+    """A failure sets the status and keeps the message for the console."""
     catalog.add_file("a.pdf", "a")
 
     catalog.record_failed("a.pdf", "No text extracted")
@@ -220,6 +236,7 @@ def test_record_failed_keeps_the_row(catalog: Catalog) -> None:
 
 
 def test_trash_keeps_the_metadata(catalog: Catalog) -> None:
+    """A trashed document keeps its title and counts, and gains a date."""
     catalog.add_file("a.pdf", "A Document")
     catalog.record_indexed(
         "a.pdf", file_hash="abc", page_count=3, chunk_count=7
@@ -239,6 +256,7 @@ def test_trash_keeps_the_metadata(catalog: Catalog) -> None:
 
 
 def test_delete_takes_the_metadata_with_it(catalog: Catalog) -> None:
+    """A deleted document leaves no row behind."""
     catalog.add_file("a.pdf", "A Document")
     catalog.record_indexed("a.pdf", file_hash="abc", page_count=3, chunk_count=7)
 
@@ -249,11 +267,13 @@ def test_delete_takes_the_metadata_with_it(catalog: Catalog) -> None:
 
 
 def test_deleting_an_unknown_document_raises(catalog: Catalog) -> None:
+    """Deleting a path that is not in the catalog raises."""
     with pytest.raises(KeyError, match="No such document"):
         catalog.delete("ghost.pdf")
 
 
 def test_all_is_ordered_by_path(catalog: Catalog) -> None:
+    """all() returns every row, sorted by path."""
     for path in ("z.pdf", "a/b.pdf", "m.pdf"):
         catalog.add_file(path, Path(path).stem)
 
@@ -265,6 +285,7 @@ def test_all_is_ordered_by_path(catalog: Catalog) -> None:
 
 
 def test_a_read_only_catalog_does_not_create_the_file(db_path: Path) -> None:
+    """Opening a database that is not there yet writes nothing."""
     catalog = Catalog(db_path, create=False)
 
     assert catalog.all() == []
@@ -273,6 +294,7 @@ def test_a_read_only_catalog_does_not_create_the_file(db_path: Path) -> None:
 
 
 def test_a_read_only_catalog_refuses_to_write(tmp_path: Path) -> None:
+    """A read-only catalog serves reads and rejects writes."""
     db_path = tmp_path / "catalog.sqlite3"
     Catalog(db_path).add_file("a.pdf", "a")
 
@@ -294,6 +316,10 @@ def test_a_read_only_catalog_refuses_to_write(tmp_path: Path) -> None:
 def test_the_category_is_the_folder_a_document_sits_in(
     path: str, expected: str | None
 ) -> None:
+    """The folder a document is filed in is its category.
+
+    A file at the root of the library has no category at all.
+    """
     assert category_from_path(path) == expected
 
 
@@ -314,10 +340,16 @@ def test_the_category_is_the_folder_a_document_sits_in(
 def test_a_category_is_stored_the_way_it_is_typed(
     typed: str | None, expected: str | None
 ) -> None:
+    """A typed category is tidied up before it is stored.
+
+    Surrounding spaces and stray slashes go, and an empty category becomes
+    None.
+    """
     assert normalise_category(typed) == expected
 
 
 def test_a_new_document_is_filed_under_its_folder(catalog: Catalog) -> None:
+    """A new document is filed under the category taken from its path."""
     catalog.add_file(
         "manuals/manual.pdf", "manual", category=category_from_path("manuals/manual.pdf")
     )
@@ -326,17 +358,17 @@ def test_a_new_document_is_filed_under_its_folder(catalog: Catalog) -> None:
 
 
 def test_a_document_at_the_root_has_no_category(catalog: Catalog) -> None:
+    """A file at the root of the library is stored without a category."""
     catalog.add_file("a.pdf", "a", category=category_from_path("a.pdf"))
 
     assert catalog.get("a.pdf").category is None
 
 
 def test_re_indexing_does_not_undo_a_move(catalog: Catalog) -> None:
-    """The rule that makes the catalog the authority rather than the folder.
+    """Re-indexing a document keeps the category it was moved to.
 
-    A document is filed by its folder once, when the row is created. Recording
-    the outcome of an index run must not write the column again, or the next
-    sync would put every document moved by hand back where its folder says.
+    The category recorded at indexing time is the folder the file sits in,
+    so a document that was moved afterwards would otherwise be dragged back.
     """
     catalog.add_file("manuals/manual.pdf", "manual", category="manuals")
     catalog.set_category("manuals/manual.pdf", "archive")
@@ -349,6 +381,7 @@ def test_re_indexing_does_not_undo_a_move(catalog: Catalog) -> None:
 
 
 def test_a_document_moves_between_categories(catalog: Catalog) -> None:
+    """Moving a document replaces the category it had."""
     catalog.add_file("a.pdf", "a", category=None)
 
     catalog.set_category("a.pdf", "manuals/ancient")
@@ -357,12 +390,13 @@ def test_a_document_moves_between_categories(catalog: Catalog) -> None:
 
 
 def test_moving_an_unknown_document_raises(catalog: Catalog) -> None:
+    """Moving a path the catalog does not hold raises."""
     with pytest.raises(KeyError, match="No such document"):
         catalog.set_category("ghost.pdf", "manuals")
 
 
 def test_a_document_can_be_described(catalog: Catalog) -> None:
-    """The one column nothing wrote, and the one `scripts.describe` fills."""
+    """A description can be written to a document and read back."""
     catalog.add_file("a.pdf", "a")
 
     assert catalog.get("a.pdf").description is None
@@ -373,12 +407,13 @@ def test_a_document_can_be_described(catalog: Catalog) -> None:
 
 
 def test_describing_an_unknown_document_raises(catalog: Catalog) -> None:
+    """Describing a path the catalog does not hold raises."""
     with pytest.raises(KeyError, match="No such document"):
         catalog.set_description("ghost.pdf", "A manual about the thing.")
 
 
 def test_a_description_can_be_taken_back(catalog: Catalog) -> None:
-    """What the sync does to a description written from another edition."""
+    """Clearing the description leaves the document without one."""
     catalog.add_file("a.pdf", "a")
     catalog.set_description("a.pdf", "A manual about the thing.")
 
@@ -390,11 +425,17 @@ def test_a_description_can_be_taken_back(catalog: Catalog) -> None:
 def test_taking_back_the_description_of_an_unknown_document_raises(
     catalog: Catalog,
 ) -> None:
+    """Clearing a description on an unknown path raises."""
     with pytest.raises(KeyError, match="No such document"):
         catalog.clear_description("ghost.pdf")
 
 
 def test_a_category_takes_the_documents_below_it(catalog: Catalog) -> None:
+    """A category returns the documents below it, at any depth.
+
+    Passing include_descendants=False keeps only the documents filed
+    directly in it.
+    """
     for path in ("manuals/a.pdf", "manuals/ancient/b.pdf", "reports/c.pdf"):
         catalog.add_file(path, Path(path).stem, category=category_from_path(path))
         catalog.record_indexed(path, file_hash="x", page_count=1, chunk_count=1)
@@ -411,7 +452,10 @@ def test_a_category_takes_the_documents_below_it(catalog: Catalog) -> None:
 def test_a_category_leaves_out_documents_with_no_vectors(
     catalog: Catalog,
 ) -> None:
-    """A trashed or failed document has nothing to search, so it is not in scope."""
+    """Only indexed documents are returned, so a search has vectors to use.
+
+    A trashed or failed document still has a row, but nothing to search.
+    """
     for path in ("manuals/a.pdf", "manuals/b.pdf", "manuals/c.pdf"):
         catalog.add_file(path, Path(path).stem, category="manuals")
 
@@ -425,6 +469,7 @@ def test_a_category_leaves_out_documents_with_no_vectors(
 def test_the_documents_with_no_category_are_only_the_root_ones(
     catalog: Catalog,
 ) -> None:
+    """Asking for the None category returns the files at the root."""
     for path in ("a.pdf", "manuals/b.pdf"):
         catalog.add_file(path, Path(path).stem, category=category_from_path(path))
         catalog.record_indexed(path, file_hash="x", page_count=1, chunk_count=1)
@@ -433,6 +478,10 @@ def test_the_documents_with_no_category_are_only_the_root_ones(
 
 
 def test_the_tree_nests_the_categories_it_is_given() -> None:
+    """A category that has children becomes a branch in the tree.
+
+    Each branch counts the documents of its own and the total below it.
+    """
     tree = build_category_tree(
         [("manuals", 1), ("manuals/ancient", 1), ("manuals/modern", 2), (None, 3)]
     )
@@ -449,7 +498,10 @@ def test_the_tree_nests_the_categories_it_is_given() -> None:
 
 
 def test_a_category_holding_nothing_of_its_own_still_has_a_place() -> None:
-    """Dropping it would lose the level that says where the documents sit."""
+    """A parent with no document of its own is still shown in the tree.
+
+    It counts zero documents of its own and the total below it.
+    """
     tree = build_category_tree([("manuals/ancient/a", 2)])
 
     assert [branch.name for branch in tree] == ["manuals"]
@@ -461,6 +513,7 @@ def test_a_category_holding_nothing_of_its_own_still_has_a_place() -> None:
 def test_category_counts_only_counts_the_documents_that_are_indexed(
     catalog: Catalog,
 ) -> None:
+    """A trashed document is left out of the per-category counts."""
     catalog.add_file("manuals/a.pdf", "a", category="manuals")
     catalog.add_file("manuals/b.pdf", "b", category="manuals")
     catalog.add_file("c.pdf", "c", category=None)
@@ -468,5 +521,5 @@ def test_category_counts_only_counts_the_documents_that_are_indexed(
         catalog.record_indexed(path, file_hash="x", page_count=1, chunk_count=1)
     catalog.trash("manuals/b.pdf")
 
-    # Compared as a mapping: the order the rows come back in is SQLite's.
+
     assert dict(catalog.category_counts()) == {"manuals": 1, None: 1}

@@ -1,9 +1,8 @@
-"""The categories of the library: what is in them, and moving a document.
+"""Show what the catalog holds, and file a document under a category.
 
-Where a document is filed is a catalog fact. The folder the file sits in seeded
-it once, when the file was first indexed, and nothing reads the folder for it
-again — so the move here is the whole of the answer to "put this document
-somewhere else", and it costs a row, not a re-index.
+`show` prints the tree of categories with the number of documents in each, and
+with `--documents` it lists them under every category. `move` changes the
+category of one document, which is a write to the catalog alone.
 """
 
 from __future__ import annotations
@@ -21,14 +20,16 @@ from app.catalog import (
 from app.config import settings, short_path
 from scripts.locks import single_run
 
+# The label used for the documents that are filed in no category.
 NO_CATEGORY = "no category"
 
 
 def show(*, documents: bool = False, db_path: Path | None = None) -> None:
-    """Print the category tree, with the documents under each when asked.
+    """Print the catalog as a tree of categories.
 
-    Read-only: looking at the library must never bring a database into existence,
-    which is what `create=False` is for.
+    With `documents` every category is followed by the documents under it. A
+    category with nothing filed directly in it still appears, because documents
+    filed below it count towards it.
     """
     db_path = Path(db_path or settings.catalog_db_path)
     print(f"catalog {short_path(db_path)}\n")
@@ -63,28 +64,26 @@ def show(*, documents: bool = False, db_path: Path | None = None) -> None:
 def walk(
     tree: tuple[CategoryBranch, ...], depth: int = 0
 ) -> Iterator[tuple[CategoryBranch, int]]:
-    """Every branch, with how deep it sits, parents before children."""
+    """Every branch of the tree, each with how deep it sits."""
     for branch in tree:
         yield branch, depth
         yield from walk(branch.children, depth + 1)
 
 
 def label_of(branch: CategoryBranch, depth: int) -> str:
-    """The category as it is written here: indented, but under its full name.
+    """The name of a branch, indented by its depth.
 
-    The full name and not the leaf, because the full name is what `--category`
-    takes and what a person would type next.
+    The tree is printed as a flat list of lines, so the depth is written into
+    the name.
     """
     return "  " * depth + branch.name
 
 
 def print_documents(catalog: Catalog, sources: list[str], depth: int) -> None:
-    """The documents of a branch, one level in from it.
+    """Print one document per line, with its description under it.
 
-    Dashed, because a line without a dash is a category and the two must not have
-    to be told apart by reading them. What the catalog says about a document sits
-    under it, indented one more: it belongs to the line above, and it is the
-    reason to ask for the documents at all rather than only their counts.
+    The description goes on the next line, indented further, so that it does not
+    read as part of the line above.
     """
     for source in sources:
         print(f"{'  ' * depth}- {source}")
@@ -96,15 +95,15 @@ def print_documents(catalog: Catalog, sources: list[str], depth: int) -> None:
 
 
 def documents_count(count: int) -> str:
-    """`1 document` or `3 documents`: these counts are read by a person."""
+    """The count with the word after it, in the singular for one."""
     return f"{count} document" + ("" if count == 1 else "s")
 
 
 def move(path: str, category: str | None, *, db_path: Path | None = None) -> None:
-    """File a document under another category.
+    """File a document under a category, or under none.
 
-    The file does not have to move and the vectors are not touched, so a
-    reorganisation of the library costs one row per document.
+    Only the catalog is written. The file stays where it is and nothing is
+    indexed again.
     """
     db_path = Path(db_path or settings.catalog_db_path)
 
@@ -114,7 +113,7 @@ def move(path: str, category: str | None, *, db_path: Path | None = None) -> Non
     where = normalise_category(category)
     catalog = Catalog(db_path)
 
-    # The same lock as sync and delete: they touch the same rows.
+    # A move is a write like any other, so it waits for the lock.
     with single_run(db_path):
         try:
             catalog.set_category(path, where)
@@ -128,6 +127,7 @@ def move(path: str, category: str | None, *, db_path: Path | None = None) -> Non
 
 
 def parse_args() -> argparse.Namespace:
+    """The command line, checked against the command that was asked for."""
     parser = argparse.ArgumentParser(
         description=(
             "Show what is filed where, or move a document between categories. "
@@ -177,13 +177,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Run the command that was asked for."""
     args = parse_args()
 
     if args.command == "move":
         move(args.path, args.to, db_path=args.db)
         return
 
-    # No command at all means `show`: looking is what this is mostly for.
+    # Nothing else was asked for, so the catalog is printed.
     show(documents=args.documents, db_path=args.db)
 
 

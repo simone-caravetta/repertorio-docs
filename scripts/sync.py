@@ -1,3 +1,10 @@
+"""Bring the catalog and the index in step with the documents folder.
+
+New files are indexed, changed files are indexed again, and a file that is gone
+from the folder goes to the trash. Each indexed document also gets a description
+written for it, unless `--no-descriptions` is given.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -20,33 +27,31 @@ def sync(
     descriptions: bool = True,
     chat_model: BaseChatModel | None = None,
 ) -> SyncReport:
-    """Run the sync against the configured folders, then print what it did.
+    """Reconcile the folder, the catalog and the vector store.
 
-    The run writes each document's description as it indexes, which is one model
-    call per document that needs one: `descriptions=False` indexes the folder and
-    writes none, for a run that has no key to spend or does not want to spend it.
+    Returns what the run found and did. With `dry_run` nothing is opened for
+    writing and nothing changes, which is also why no model is called and no
+    vector store is needed.
     """
     documents_dir = Path(documents_dir or settings.documents_dir)
     db_path = Path(db_path or settings.catalog_db_path)
 
-    # Said before any work, so that a run against the wrong store is visible at
-    # the top of the output rather than inferred from a sync that did nothing.
+    # Printed before anything happens, so that a run can be read back with the
+    # settings it used.
     print(f"store   {describe_vector_store(settings)}")
     print(f"catalog {short_path(db_path)}\n")
 
     vectorstore = None
     model = None
     if not dry_run:
-        # Imported here so a dry run opens no client and needs no API keys.
+        # Imported here so that a dry run does not open a vector store at all.
         from app.vectorstore import get_vectorstore
 
         vectorstore = get_vectorstore()
 
         if descriptions:
-            # Built before the run rather than at the first document that needs a
-            # description: a key that is not there is worth knowing before the
-            # folder is half indexed. Nothing is contacted here either way — the
-            # model is a client until a description is asked for.
+            # A description costs one call to the model per document, so the
+            # model is built once and only when descriptions were asked for.
             model = chat_model or build_chat_model()
 
     with single_run(db_path, enabled=not dry_run):
@@ -71,12 +76,10 @@ def sync(
 
 
 def note_undescribed(db_path: Path) -> None:
-    """Say how many documents have no description, and which command writes them.
+    """Say how many indexed documents have no description yet.
 
-    The run writes one for every document it indexes that has none, so a library
-    it has just been through is missing none — unless a call failed, or a
-    document was indexed before the sync did this at all. Those are what is left
-    here, and the command named is the way to put them right.
+    This is what a run that indexed nothing new still has to report, when the
+    documents that were already there are the ones missing a description.
     """
     from app.catalog import Catalog
     from app.descriptions import undescribed
@@ -94,18 +97,12 @@ def note_undescribed(db_path: Path) -> None:
 def warn_if_the_store_is_empty(
     report: SyncReport, vectorstore: object, db_path: Path
 ) -> None:
-    """Say so when the catalog describes documents the store does not hold.
+    """Warn about a catalog that lists documents the store holds no vectors for.
 
-    The catalog does not record which store it was built against, so pointing
-    VECTOR_STORE somewhere new — or at a folder that was deleted, or an index
-    that was recreated — reconciles to nothing at all: every file still matches
-    its hash, so the run reports no work, and the store it now points at is
-    empty. Unsaid, that reads as a working library until someone asks a question.
-
-    Only ever a warning: it cannot change what the run did.
+    This happens when the catalog was built against another store. The run has
+    nothing to do, because the files have not changed, and a search will find
+    nothing until the store is pointed back or the catalog is built again.
     """
-    # The run wrote something, so an empty store is a different problem and the
-    # failures are already on screen.
     if report.added or report.updated or report.restored:
         return
 
@@ -122,7 +119,7 @@ def warn_if_the_store_is_empty(
 
     found = vector_count(vectorstore)
     if found is None or found > 0:
-        return  # it holds vectors, or it cannot say: either way, stay quiet
+        return
 
     print(
         f"\nNote: the catalog lists {len(indexed)} indexed document(s), but "
@@ -134,6 +131,7 @@ def warn_if_the_store_is_empty(
 
 
 def print_report(report: SyncReport, *, dry_run: bool = False) -> None:
+    """Print what the run found, one line per document."""
     for source in report.added:
         print(f"add     {source}")
     for source in report.updated:
@@ -147,8 +145,8 @@ def print_report(report: SyncReport, *, dry_run: bool = False) -> None:
     for source in report.skipped:
         print(f"skip    {source}")
 
-    # After the documents, because it is a pass of its own over the library, and
-    # not a state any document is left in.
+    # Descriptions are written after the whole folder has been indexed, so they
+    # come after the documents in the report.
     for source in report.described:
         print(f"describe {source}")
     for source, error in report.description_failed:
@@ -166,6 +164,7 @@ def print_report(report: SyncReport, *, dry_run: bool = False) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """The command line, with the folder and the catalog."""
     parser = argparse.ArgumentParser(
         description=(
             "Reconcile the documents folder, the catalog and the vector store: "
@@ -200,6 +199,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Run the sync."""
     args = parse_args()
     sync(
         dry_run=args.dry_run,

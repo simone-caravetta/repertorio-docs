@@ -1,10 +1,9 @@
-"""The web application, over the same fakes the graph tests use.
+"""Tests for the HTTP API.
 
-Nothing here reaches an API or a vector store: the catalog is a real SQLite file
-in `tmp_path` — it is a local file and costs nothing — and the model and the
-retriever are the doubles from `tests.helpers`. The one test that uses the real
-persistent checkpointer uses it over a file in `tmp_path` too, which is what
-makes it a test of surviving a restart rather than of surviving a function call.
+A test builds the app around a fake chat model and a fake retriever, so the
+endpoints answer without a network call or a vector store. The chat answers
+are read back as server-sent events, one block at a time, which is how the
+console reads them too.
 """
 
 from __future__ import annotations
@@ -38,21 +37,22 @@ ANNEX = "manuals/annex.pdf"
 REPORT = "reports/report.pdf"
 LOOSE = "notes.pdf"
 
-# The opening of what the resolver says about a category whose documents are all
-# failed or trashed. Spelled out here rather than read off the message, so that a
-# change in the wording is a change in two places and not quietly in one. What
-# follows the full stop is a hint listing the categories there are.
+
+# The refusal a category with nothing indexed produces.
 NOWHERE = "No indexed documents in the category 'empty'."
 
 
 @dataclass
 class Harness:
-    """The application over fakes, with the fakes kept where a test can see them."""
+    """An app together with the fakes behind it.
+
+    The scopes list records the scope each retriever was built for.
+    """
 
     app: FastAPI
     model: FakeChatModel
     retriever: FakeRetriever
-    # Every scope the application asked for a retriever with, in order.
+
     scopes: list[Scope] = field(default_factory=list)
 
     def client(self) -> TestClient:
@@ -61,7 +61,7 @@ class Harness:
 
 @pytest.fixture
 def config(tmp_path: Path, db_path: Path) -> Settings:
-    """The settings of a machine whose library is this test's, and nothing else's."""
+    """Settings with the catalog, the documents and the threads in tmp_path."""
     return make_settings(
         catalog_db_path=db_path,
         documents_dir=tmp_path / "documents",
@@ -76,7 +76,12 @@ def harness_for(
     documents: list[Document] | None = None,
     checkpointer: Any = None,
 ) -> Harness:
-    """The application, answering from `replies` and searching `documents`."""
+    """Build an app whose model replies with the given texts.
+
+    The passages the retriever hands back are the ones given, or a single
+    example passage. Every retriever the app builds is kept on the harness,
+    so a test can see which scope was asked for.
+    """
     model = FakeChatModel(replies=replies)
     retriever = FakeRetriever(
         [passage()] if documents is None else documents
@@ -103,13 +108,7 @@ def passage(
     start: int = 0,
     end: int = 28,
 ) -> Document:
-    """One retrieved chunk, with the metadata a real one carries.
-
-    `page` is the zero-based one a store holds, which the graph reports as the
-    number a reader would turn to. Two chunks differing only in `chunk` are two
-    passages of one page, and `start` and `end` are where each of them sits in
-    that page's text — the offsets a citation is drawn with.
-    """
+    """A retrieved passage, with the metadata a real one carries."""
     return Document(
         page_content="The thing is explained here.",
         metadata={
@@ -132,7 +131,11 @@ def file_document(
     pages: int = 3,
     chunks: int = 4,
 ) -> None:
-    """Put a document in the catalog, in the state a test is about."""
+    """Put one document in the catalog, at the status asked for.
+
+    The title defaults to the file name, and the counts are what an indexed
+    document of that size would have.
+    """
     catalog = Catalog(db_path)
     catalog.add_file(path, title or Path(path).stem, category)
 
@@ -147,12 +150,16 @@ def file_document(
 
 
 def described(db_path: Path, path: str, text: str) -> None:
-    """What `scripts.describe` leaves behind: the catalog saying what it is about."""
+    """Write a description onto a document that is already in the catalog."""
     Catalog(db_path).set_description(path, text)
 
 
 def events_of(response: Any) -> list[tuple[str, dict[str, Any]]]:
-    """A stream as the page reads it: the name and the payload of each event."""
+    """Read a streamed answer as a list of event name and payload pairs.
+
+    Each block of the body holds an event line and a data line. The data is
+    JSON, which is what the console parses.
+    """
     events: list[tuple[str, dict[str, Any]]] = []
 
     for block in response.text.split("\n\n"):
@@ -174,19 +181,25 @@ def events_of(response: Any) -> list[tuple[str, dict[str, Any]]]:
 
 
 def names_of(events: list[tuple[str, dict[str, Any]]]) -> list[str]:
+    """The event names, in the order they arrived."""
     return [name for name, _ in events]
 
 
 def ask(client: TestClient, question: str, **scope: Any) -> Any:
+    """Ask a question, passing any scope along in the request body."""
     return client.post("/api/chat", json={"question": question, **scope})
 
 
-# ---------------------------------------------------------------- the catalog
-
-
+# The catalog endpoint, which returns the documents of the library grouped
+# into the tree the console shows.
 def test_documents_are_grouped_under_the_category_they_are_filed_in(
     db_path: Path, config: Settings
 ):
+    """Documents come back under the category they are filed in.
+
+    Each row carries the status and the counts from indexing, and a
+    document with no description yet has None there.
+    """
     file_document(db_path, MANUAL, title="The manual", category="manuals", pages=12)
     file_document(db_path, ANNEX, title="The annex", category="manuals")
     file_document(db_path, REPORT, title="The report", category="reports")
@@ -212,8 +225,8 @@ def test_documents_are_grouped_under_the_category_they_are_filed_in(
     assert manual["status"] == "indexed"
     assert manual["pages"] == 12
     assert manual["chunks"] == 4
-    # Phase 5 fills this in; until then the field is here and empty, which is what
-    # a page renders as "no description" rather than as a broken row.
+
+    # Nothing has described the manual, so the field is empty.
     assert manual["description"] is None
     assert view["categories"][1]["documents"][0]["title"] == "The report"
 
@@ -221,6 +234,10 @@ def test_documents_are_grouped_under_the_category_they_are_filed_in(
 def test_a_category_holding_no_document_of_its_own_still_appears(
     db_path: Path, config: Settings
 ):
+    """A parent category with nothing filed directly in it is still shown.
+
+    It has no documents of its own and counts the one below it.
+    """
     file_document(db_path, "manuals/2024/manual.pdf", category="manuals/2024")
 
     with harness_for(config, replies=[]).client() as client:
@@ -235,6 +252,7 @@ def test_a_category_holding_no_document_of_its_own_still_appears(
 def test_documents_in_no_category_are_listed_apart_from_the_tree(
     db_path: Path, config: Settings
 ):
+    """Documents with no category are returned in their own list."""
     file_document(db_path, MANUAL, category="manuals")
     file_document(db_path, LOOSE, title="A note")
 
@@ -246,6 +264,7 @@ def test_documents_in_no_category_are_listed_apart_from_the_tree(
 
 
 def test_a_trashed_document_is_left_out(db_path: Path, config: Settings):
+    """A trashed document is not listed under its category."""
     file_document(db_path, MANUAL, category="manuals")
     file_document(db_path, ANNEX, title="Gone", status="trashed")
 
@@ -258,7 +277,7 @@ def test_a_trashed_document_is_left_out(db_path: Path, config: Settings):
 def test_a_document_that_failed_to_index_is_still_shown(
     db_path: Path, config: Settings
 ):
-    """It has no vectors, so no question reaches it — which is worth saying."""
+    """A document that failed appears, so the console can show the failure."""
     file_document(db_path, MANUAL, category="manuals", status="failed")
 
     with harness_for(config, replies=[]).client() as client:
@@ -271,7 +290,7 @@ def test_a_document_that_failed_to_index_is_still_shown(
 def test_no_catalog_at_all_is_an_empty_view_and_writes_nothing(
     db_path: Path, config: Settings
 ):
-    """Looking at the library must not bring a database into existence."""
+    """With no catalog file the view is empty and no file is created."""
     with harness_for(config, replies=[]).client() as client:
         view = client.get("/api/catalog").json()
 
@@ -279,12 +298,15 @@ def test_no_catalog_at_all_is_an_empty_view_and_writes_nothing(
     assert not db_path.exists()
 
 
-# ------------------------------------------------------------------- the scope
-
-
+# The scope endpoint, which turns a typed category or document into the set
+# of sources a search will run over.
 def test_the_scope_label_is_the_one_the_console_prints(
     db_path: Path, config: Settings
 ):
+    """A category resolves to its indexed documents, sorted by path.
+
+    The label is the one the console prints for that scope.
+    """
     file_document(db_path, MANUAL, category="manuals")
     file_document(db_path, ANNEX, category="manuals")
 
@@ -299,6 +321,10 @@ def test_the_scope_label_is_the_one_the_console_prints(
 def test_the_whole_library_is_no_restriction_rather_than_no_documents(
     db_path: Path, config: Settings
 ):
+    """With no category and no document, the whole library is searched.
+
+    That is signalled by the sources being None instead of a list.
+    """
     file_document(db_path, MANUAL, category="manuals")
 
     with harness_for(config, replies=[]).client() as client:
@@ -312,6 +338,7 @@ def test_the_whole_library_is_no_restriction_rather_than_no_documents(
 def test_a_category_with_nothing_indexed_is_refused_in_the_resolvers_words(
     db_path: Path, config: Settings
 ):
+    """A category with nothing indexed is refused with the resolver's words."""
     file_document(db_path, MANUAL, category="empty", status="failed")
 
     with harness_for(config, replies=[]).client() as client:
@@ -324,6 +351,11 @@ def test_a_category_with_nothing_indexed_is_refused_in_the_resolvers_words(
 def test_a_question_about_nothing_is_refused_before_any_stream_begins(
     db_path: Path, config: Settings
 ):
+    """A question about an empty category fails before the stream starts.
+
+    The refusal is a plain error response, not a stream carrying an error
+    event.
+    """
     file_document(db_path, MANUAL, category="manuals")
 
     with harness_for(config, replies=[]).client() as client:
@@ -337,6 +369,10 @@ def test_a_question_about_nothing_is_refused_before_any_stream_begins(
 def test_the_retriever_is_built_from_the_scope_that_was_asked_for(
     db_path: Path, config: Settings
 ):
+    """Narrowing a question to one document builds a retriever for it.
+
+    That scope covers the whole document.
+    """
     file_document(db_path, MANUAL, category="manuals")
 
     harness = harness_for(config, replies=["a standalone question", "the answer"])
@@ -345,28 +381,22 @@ def test_the_retriever_is_built_from_the_scope_that_was_asked_for(
 
     assert response.status_code == 200
     assert [scope.sources for scope in harness.scopes] == [(MANUAL,)]
-    # Four chunks is under the whole-document budget, so the scope reads the
-    # document rather than searching it — decided here, not in the page.
+
     assert harness.scopes[0].whole_document is True
 
 
-# ------------------------------------------------------------------ the boxes
-
-# A page of two lines, so that a range covering both of them is a range with two
-# rectangles to answer with — which one flat run of text could never be.
+# The boxes endpoint, which maps a character range in a page of a PDF back
+# to the rectangles that cover it.
 FIRST_LINE = "The first line of the page."
 SECOND_LINE = "The second line, below it."
 TWO_LINES = "manuals/two-lines.pdf"
 
 
 def a_page_of_two_lines(config: Settings, name: str = TWO_LINES) -> str:
-    """Write a two-line document into the library, and return its page text.
+    """Write a one-page PDF of two lines and read its text back.
 
-    Real typography rather than `make_pdf`, which lays a page down as one run of
-    text: two lines that can be told apart by where they are need a page with two
-    of them on it. The text comes back because that is what the offsets are into
-    — the same text the reader builds at ingest, which is the whole contract the
-    two halves of this share.
+    The text comes from the same reader the API uses, so the offsets found
+    in it are the ones the endpoint is asked about.
     """
     path = make_structured_pdf(
         Path(config.documents_dir) / name,
@@ -377,6 +407,7 @@ def a_page_of_two_lines(config: Settings, name: str = TWO_LINES) -> str:
 
 
 def boxes_of(client: TestClient, **params: Any) -> Any:
+    """Ask for the boxes of a range of the two-line page."""
     return client.get(
         "/api/documents/boxes",
         params={"source": TWO_LINES, "page": 1, "start": 0, "end": 1, **params},
@@ -384,6 +415,10 @@ def boxes_of(client: TestClient, **params: Any) -> Any:
 
 
 def test_a_range_comes_back_as_the_boxes_that_cover_it(config: Settings):
+    """A range over the first line comes back as one box.
+
+    The box starts at the left margin and is about a line tall.
+    """
     text = a_page_of_two_lines(config)
     start = text.index(FIRST_LINE)
 
@@ -397,15 +432,18 @@ def test_a_range_comes_back_as_the_boxes_that_cover_it(config: Settings):
     boxes = answer.json()["boxes"]
     assert len(boxes) == 1
     x0, y0, x1, y1 = boxes[0]
-    # A line and not a page: written from the left margin, ending before the
-    # right one, and as tall as a line of text is.
+
+    # A line of text starts at the left margin and stops before the edge.
     assert x0 == pytest.approx(72, abs=1)
     assert x1 < 612
     assert 0 < y1 - y0 < 20
 
 
 def test_a_range_across_two_lines_is_two_boxes(config: Settings):
-    """One box around the lot would be the width of the page and say nothing."""
+    """A range over both lines comes back as two boxes.
+
+    They are in the order the lines are read.
+    """
     text = a_page_of_two_lines(config)
     start = text.index(FIRST_LINE)
     end = text.index(SECOND_LINE) + len(SECOND_LINE)
@@ -414,15 +452,15 @@ def test_a_range_across_two_lines_is_two_boxes(config: Settings):
         boxes = boxes_of(client, start=start, end=end).json()["boxes"]
 
     assert len(boxes) == 2
-    # The one above is above the other, which is what tells two lines from two
-    # halves of one.
+
+    # The second box sits below the first one.
     assert boxes[0][1] < boxes[1][1]
 
 
 def test_a_range_that_covers_nothing_is_an_empty_answer(config: Settings):
-    """`[]` rather than a refusal: the range is a real one that holds no text.
+    """A range over the break between the two lines covers no text.
 
-    The character between the two lines is a newline, which nothing was drawn on.
+    The answer is an empty list of boxes at status 200.
     """
     text = a_page_of_two_lines(config)
     gap = text.index("\n")
@@ -435,11 +473,9 @@ def test_a_range_that_covers_nothing_is_an_empty_answer(config: Settings):
 
 
 def test_a_page_needs_no_catalog(db_path: Path, config: Settings):
-    """The folder says a document is here, and the catalog has no part in it.
+    """Boxes are read from the PDF, so no catalog is needed.
 
-    A file that has never been synced still has pages, and a viewer asked about
-    one of them can be answered without a database being opened — or, as here,
-    without one existing at all.
+    Asking for them does not create a catalog file.
     """
     assert not db_path.exists()
     a_page_of_two_lines(config)
@@ -453,11 +489,9 @@ def test_a_page_needs_no_catalog(db_path: Path, config: Settings):
 def test_a_source_outside_the_documents_folder_is_refused(
     tmp_path: Path, config: Settings
 ):
-    """The file is there and is a PDF, and it is not in this library.
+    """A source that climbs out of the documents folder is refused.
 
-    Written outside the documents folder on purpose: without the containment
-    check the path resolves to a file that opens, and the answer would be the
-    rectangles of a document this server was never pointed at.
+    The answer says the file is not a document here.
     """
     make_pdf(tmp_path / "outside.pdf", "Not in the library.")
 
@@ -469,7 +503,7 @@ def test_a_source_outside_the_documents_folder_is_refused(
 
 
 def test_a_file_that_is_not_a_pdf_is_refused(config: Settings):
-    """Readable, and not a document this library reads: the sync ignores it too."""
+    """A file in the folder that is not a PDF is refused as a source."""
     make_pdf(Path(config.documents_dir) / "manuals" / "notes.txt", "Not a PDF here.")
 
     with harness_for(config, replies=[]).client() as client:
@@ -480,6 +514,7 @@ def test_a_file_that_is_not_a_pdf_is_refused(config: Settings):
 
 
 def test_a_document_that_is_not_there_is_refused(config: Settings):
+    """A source with no file behind it is refused."""
     with harness_for(config, replies=[]).client() as client:
         answer = boxes_of(client, source="manuals/absent.pdf", start=0, end=4)
 
@@ -489,11 +524,9 @@ def test_a_document_that_is_not_there_is_refused(config: Settings):
 
 @pytest.mark.parametrize("page", [0, 2, 99])
 def test_a_page_the_document_does_not_have_is_refused(config: Settings, page: int):
-    """Zero is the one that matters: it is a valid index, and the last page.
+    """A page beyond the one page of the file is refused.
 
-    Read as an index rather than checked as a number, a request about page zero
-    would be answered with the rectangles of the document's last page, and
-    nothing in the answer would say the question had been about another one.
+    Page numbers are counted from one, so zero is refused too.
     """
     text = a_page_of_two_lines(config)
     start = text.index(FIRST_LINE)
@@ -509,6 +542,7 @@ def test_a_page_the_document_does_not_have_is_refused(config: Settings, page: in
     ("start", "end"), [(-1, 5), (40, 20), (20, 20)]
 )
 def test_a_range_that_is_not_one_is_refused(config: Settings, start: int, end: int):
+    """A range that is negative, backwards or empty is refused."""
     a_page_of_two_lines(config)
 
     with harness_for(config, replies=[]).client() as client:
@@ -518,20 +552,22 @@ def test_a_range_that_is_not_one_is_refused(config: Settings, start: int, end: i
     assert answer.json()["detail"] == f"Not a range: {start}-{end}"
 
 
-# --------------------------------------------------------------- the answer
-
-
+# The chat endpoint, which streams the events the console reads.
 def test_the_sources_arrive_before_the_answer_is_written(
     db_path: Path, config: Settings
 ):
-    """The fifth of the roadmap's asks: sources as soon as retrieval is done."""
+    """The stream opens with the thread, the query and the sources.
+
+    The tokens come after the sources, so the console can show what was read
+    before the answer arrives. Passages of one page are merged into a single
+    entry with a range for each of them.
+    """
     file_document(db_path, MANUAL, category="manuals")
     harness = harness_for(
         config,
         replies=["a standalone question", "the answer is here"],
-        # Two passages of one page and one of another: the page is the source, so
-        # the answer cites two places and not three — and the two passages of the
-        # first are two ranges on the one row, rather than one being dropped.
+
+        # Three passages over two pages, two on the first and one on the next.
         documents=[
             passage(),
             passage(chunk=1, start=300, end=328),
@@ -564,7 +600,7 @@ def test_the_sources_arrive_before_the_answer_is_written(
     assert names.index("sources") < names.index("token")
     assert events[-1][1]["answer"] == "the answer is here"
 
-    # The tokens are the answer, piece by piece, in order.
+    # The tokens spell out the answer once, with nothing added or dropped.
     tokens = "".join(
         payload["text"] for name, payload in events if name == "token"
     )
@@ -574,12 +610,9 @@ def test_the_sources_arrive_before_the_answer_is_written(
 def test_the_query_that_was_searched_is_sent_even_when_it_is_not_the_question(
     db_path: Path, config: Settings
 ):
-    """The rewrite can put words in the query the question never had.
+    """The query event carries the rewritten question the search used.
 
-    It happens with a document name: the conversation so far is about one file,
-    the rewriter qualifies the query with it, and a search over the whole library
-    comes back with that one file. Nothing about the question says so, which is
-    why the query is sent to the page instead of staying in the server.
+    That text is what the model returned, and it goes out before the sources.
     """
     file_document(db_path, MANUAL, category="manuals")
     rewritten = 'Who is Simone in the document "manuals/manual.pdf"?'
@@ -591,18 +624,14 @@ def test_the_query_that_was_searched_is_sent_even_when_it_is_not_the_question(
     assert [payload for name, payload in events if name == "query"] == [
         {"query": rewritten}
     ]
-    # Before the passages, because it is what produced them.
+
     assert names_of(events).index("query") < names_of(events).index("sources")
 
 
 def test_the_rewriter_is_told_not_to_name_a_document_in_the_query(
     db_path: Path, config: Settings
 ):
-    """The instruction that keeps a scope from being narrowed behind the asker.
-
-    This checks the prompt carries it, which is as far as an offline test reaches:
-    whether the model obeys is the model's business and is checked by asking it.
-    """
+    """The rewriting prompt tells the model to leave document names out."""
     file_document(db_path, MANUAL, category="manuals")
     harness = harness_for(config, replies=["a standalone question", "the answer"])
 
@@ -616,13 +645,7 @@ def test_the_rewriter_is_told_not_to_name_a_document_in_the_query(
 def test_the_answer_is_told_which_documents_the_question_was_asked_of(
     db_path: Path, config: Settings
 ):
-    """The blind spot of a search: a question about the library.
-
-    "What documents do you have?" matches no passage, so the whole-library search
-    returns the chunks closest to it and nothing about the library at all. The
-    scope's own list is handed to the graph beside the retriever, which is what
-    the answer is written from instead.
-    """
+    """The prompt that writes the answer lists the documents searched."""
     file_document(db_path, MANUAL, category="manuals")
     file_document(db_path, REPORT, category="reports")
     harness = harness_for(config, replies=["a standalone question", "the answer"])
@@ -637,12 +660,9 @@ def test_the_answer_is_told_which_documents_the_question_was_asked_of(
 def test_the_answer_is_told_what_the_documents_contain(
     db_path: Path, config: Settings
 ):
-    """The other half of the same blind spot: a question about the contents.
+    """The prompt also carries the description written for each document.
 
-    "What does each of them contain?" is answered by a search with the passages
-    of whichever documents happen to match it, so a document it did not return is
-    one the answer has nothing to say about. What the catalog says about each of
-    them goes into the context beside the list, and the answer is written from it.
+    That is what a question about the library itself needs.
     """
     file_document(db_path, MANUAL, category="manuals")
     file_document(db_path, REPORT, category="reports")
@@ -661,6 +681,7 @@ def test_the_answer_is_told_what_the_documents_contain(
 def test_a_scoped_answer_is_told_only_about_the_documents_it_searched(
     db_path: Path, config: Settings
 ):
+    """A question narrowed to one document names only that one."""
     file_document(db_path, MANUAL, category="manuals")
     file_document(db_path, REPORT, category="reports")
     harness = harness_for(config, replies=["a standalone question", "the answer"])
@@ -670,14 +691,18 @@ def test_a_scoped_answer_is_told_only_about_the_documents_it_searched(
 
     written_with = str(harness.model.prompts[1])
     assert f"Documents searched: 1 — {MANUAL}" in written_with
-    # Nothing of the library it was not asked about, or the scope would be a
-    # narrower search reported as a wider one.
+
+    # The other document is not mentioned at all.
     assert REPORT not in written_with
 
 
 def test_a_question_with_nothing_retrieved_streams_no_sources(
     db_path: Path, config: Settings
 ):
+    """A search that found nothing sends no sources event.
+
+    The stream still opens with the thread and closes with done.
+    """
     file_document(db_path, MANUAL, category="manuals")
     harness = harness_for(
         config, replies=["a standalone question", "not covered"], documents=[]
@@ -686,8 +711,7 @@ def test_a_question_with_nothing_retrieved_streams_no_sources(
     with harness.client() as client:
         events = events_of(ask(client, "what does it say?"))
 
-    # No sources event at all, rather than one carrying an empty list: there is
-    # nothing to show a reader, and the page shows nothing.
+    # An empty list of passages stands for a search that found nothing.
     assert "sources" not in names_of(events)
     assert names_of(events)[0] == "thread"
     assert names_of(events)[-1] == "done"
@@ -696,10 +720,13 @@ def test_a_question_with_nothing_retrieved_streams_no_sources(
 def test_a_failure_in_the_answer_is_reported_inside_the_stream(
     db_path: Path, config: Settings
 ):
-    """The response has already begun, so an error is one more event."""
+    """A model that runs out of replies fails while the answer streams.
+
+    The failure arrives as an error event, once the thread event is out.
+    """
     file_document(db_path, MANUAL, category="manuals")
     harness = harness_for(config, replies=["a standalone question"])
-    harness.model.replies = []  # the second call has nothing to reply from
+    harness.model.replies = []
 
     with harness.client() as client:
         events = events_of(ask(client, "what does it say?"))
@@ -708,12 +735,15 @@ def test_a_failure_in_the_answer_is_reported_inside_the_stream(
     assert names_of(events)[-1] == "error"
 
 
-# ----------------------------------------------------------- the conversation
-
-
+# The threads endpoint, which reads back the conversations and deletes them.
 def test_the_thread_id_comes_back_and_the_next_question_joins_it(
     db_path: Path, config: Settings
 ):
+    """The thread event carries an id, and the client sends it back.
+
+    The second question joins the same conversation, so the thread holds
+    both turns and the query of the last one.
+    """
     file_document(db_path, MANUAL, category="manuals")
     harness = harness_for(
         config,
@@ -741,17 +771,18 @@ def test_the_thread_id_comes_back_and_the_next_question_joins_it(
         {"role": "human", "content": "and for minors?"},
         {"role": "ai", "content": "the second answer"},
     ]
-    # The last turn's query, so that a reloaded page says what was searched for
-    # as well as what was said.
+
+    # The thread keeps the query the second question was rewritten into.
     assert thread["query"] == "a second standalone question"
-    # The follow-up was rewritten knowing what came before it, which is the
-    # conversation being one conversation rather than two questions in a row.
+
+    # The prompt for the second question carries the first answer with it.
     assert "the answer" in str(harness.model.prompts[2])
 
 
 def test_a_question_asked_without_a_thread_id_starts_a_new_conversation(
     db_path: Path, config: Settings
 ):
+    """Two questions sent without a thread id get two different ids."""
     file_document(db_path, MANUAL, category="manuals")
     harness = harness_for(
         config,
@@ -773,7 +804,10 @@ def test_a_question_asked_without_a_thread_id_starts_a_new_conversation(
 def test_a_conversation_survives_the_server_being_restarted(
     tmp_path: Path, db_path: Path, config: Settings
 ):
-    """The point of the persistent checkpointer, over a real file in `tmp_path`."""
+    """A second app over the same files reads the conversation the first had.
+
+    The thread database lives in the test's tmp_path, so both apps open it.
+    """
     file_document(db_path, MANUAL, category="manuals")
     assert Path(config.conversations_db_path).parent == tmp_path
 
@@ -781,7 +815,7 @@ def test_a_conversation_survives_the_server_being_restarted(
     with first.client() as client:
         thread_id = events_of(ask(client, "what does it say?"))[0][1]["thread_id"]
 
-    # A second server, over the same file: nothing of the first one is in memory.
+    # A new app over the same database stands in for a restart.
     second = harness_for(
         config, replies=["a second standalone question", "the second answer"]
     )
@@ -793,7 +827,7 @@ def test_a_conversation_survives_the_server_being_restarted(
             "the answer",
         ]
 
-        # And it can be carried on, which is what a conversation is for.
+        # The conversation carries on where it left off.
         events_of(ask(client, "and for minors?", thread_id=thread_id))
         thread = client.get(f"/api/threads/{thread_id}").json()
 
@@ -803,6 +837,7 @@ def test_a_conversation_survives_the_server_being_restarted(
 def test_a_conversation_nobody_has_had_yet_is_empty_rather_than_an_error(
     config: Settings,
 ):
+    """An id nobody has used reads as an empty conversation, not as a 404."""
     with harness_for(config, replies=[]).client() as client:
         thread = client.get("/api/threads/chat-nobody").json()
 
@@ -815,6 +850,7 @@ def test_a_conversation_nobody_has_had_yet_is_empty_rather_than_an_error(
 
 
 def test_deleting_a_conversation_empties_it(db_path: Path, config: Settings):
+    """Deleting a thread answers with its id and leaves it empty."""
     file_document(db_path, MANUAL, category="manuals")
     harness = harness_for(config, replies=["a standalone question", "the answer"])
 
@@ -832,7 +868,7 @@ def test_deleting_a_conversation_empties_it(db_path: Path, config: Settings):
 
 
 def test_deleting_a_conversation_nobody_has_had_is_not_an_error(config: Settings):
-    """The same reading `GET` takes: there is nothing there, and that is fine."""
+    """Deleting a thread that was never used answers with status 200."""
     with harness_for(config, replies=[]).client() as client:
         deleted = client.delete("/api/threads/chat-nobody")
 
@@ -842,6 +878,7 @@ def test_deleting_a_conversation_nobody_has_had_is_not_an_error(config: Settings
 def test_deleting_one_conversation_leaves_the_others_alone(
     db_path: Path, config: Settings
 ):
+    """Deleting one thread leaves the other conversation as it was."""
     file_document(db_path, MANUAL, category="manuals")
     file_document(db_path, REPORT, category="reports")
     harness = harness_for(
@@ -870,7 +907,7 @@ def test_deleting_one_conversation_leaves_the_others_alone(
 def test_a_deleted_conversation_does_not_come_back_when_the_server_restarts(
     db_path: Path, config: Settings
 ):
-    """The point of deleting rather than forgetting: the file no longer holds it."""
+    """A deleted thread is still empty when a new app opens the database."""
     file_document(db_path, MANUAL, category="manuals")
 
     first = harness_for(config, replies=["a standalone question", "the answer"])
@@ -878,7 +915,7 @@ def test_a_deleted_conversation_does_not_come_back_when_the_server_restarts(
         thread_id = events_of(ask(client, "what does it say?"))[0][1]["thread_id"]
         client.delete(f"/api/threads/{thread_id}")
 
-    # A second server over the same file, which is where the conversation lived.
+    # A new app over the same database stands in for a restart.
     second = harness_for(config, replies=[])
     with second.client() as client:
         thread = client.get(f"/api/threads/{thread_id}").json()
@@ -886,10 +923,9 @@ def test_a_deleted_conversation_does_not_come_back_when_the_server_restarts(
     assert thread["messages"] == []
 
 
-# ------------------------------------------------------------------ the page
-
-
+# The page the console loads, together with its script and stylesheet.
 def test_the_page_and_its_files_are_served(config: Settings):
+    """The root path serves the page, with its files under /static."""
     with harness_for(config, replies=[]).client() as client:
         page = client.get("/")
         script = client.get("/static/app.js")

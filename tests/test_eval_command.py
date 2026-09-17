@@ -1,10 +1,9 @@
-"""The eval command's own surface: what it is asked for, and what it says.
+"""Tests for the command that measures a question set against the library.
 
-What a run measures is tested in `tests/test_evals.py`. Here it is the two things
-that belong to the command rather than to the measuring: the arguments it
-accepts, and the lines it prints about a run that has already happened — run
-against a library indexed into a fake store, so that the whole path from a
-question file to a report is walked without a network.
+The command reads a set of questions, resolves the scope they are asked of,
+runs them through the console's own search, and prints what it found. These
+tests cover the arguments, the two halves of a run (retrieval on its own, then
+answers and the judge), and the lines the report is printed from.
 """
 
 from __future__ import annotations
@@ -40,7 +39,7 @@ CHUNKING = {"chunk_size": 200, "chunk_overlap": 20}
 
 @pytest.fixture
 def argv(monkeypatch: pytest.MonkeyPatch) -> Callable[..., argparse.Namespace]:
-    """`parse_args`, over the arguments a shell would have handed it."""
+    """Return a function that parses a command line given as words."""
 
     def parse(*given: str) -> argparse.Namespace:
         monkeypatch.setattr(sys, "argv", ["scripts.eval", *given])
@@ -53,26 +52,16 @@ def argv(monkeypatch: pytest.MonkeyPatch) -> Callable[..., argparse.Namespace]:
 def library(
     documents_dir: Path, db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> FakeVectorStore:
-    """A folder indexed into a fake store, and that store handed to the command.
+    """The sample documents indexed, and the store lookups pointed at the fake.
 
-    A run reaches its vectors by building a store, the way a shell does, so the
-    only way to measure a library without Pinecone is to answer that build with a
-    fake — and the search the command runs is then the real retriever over it.
+    The command builds a store and a reranker of its own, so both are replaced
+    here: the store by patching the two modules that look one up, and the
+    reranker by handing back a fixed ordering. A real reranker would load a
+    cross-encoder on the first run.
 
-    The reranker is answered the same way, and for a second reason: this run does
-    not replace the settings, so what `build_retriever` reads here is the
-    machine's own `.env`, and a clone that has never reranked would download two
-    gigabytes to run a test about a report. The double keeps the order the search
-    found, which leaves the ranks these tests assert on the search's own.
-
-    `app.scope` is patched as well as `app.vectorstore`, and the reason is the one
-    the `configured` fixture gives for doing the same with settings: this module
-    imported the name rather than the module, so a store answered on one is not
-    the store seen through the other's copy. A whole-document scope builds its
-    retriever from `app.scope`'s copy, and without this it read the machine's own
-    store — a run of the whole-document path over the real library, quietly, in a
-    test whose whole point is that it touches nothing.
+    The store is returned, so a test can read back what was indexed.
     """
+
     store = FakeVectorStore()
     sync_documents(
         documents_dir,
@@ -90,6 +79,7 @@ def library(
 
 @pytest.fixture
 def question_set(tmp_path: Path) -> Path:
+    """A set of two questions, one about each document, written to a file."""
     path = tmp_path / "evals" / "questions.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -105,6 +95,7 @@ def question_set(tmp_path: Path) -> Path:
 def test_the_answers_are_not_written_unless_they_are_asked_for(
     argv: Callable[..., argparse.Namespace],
 ) -> None:
+    """Both flags are off unless they are given on the command line."""
     assert argv().answers is False
     assert argv().judge is False
     assert argv("--answers").answers is True
@@ -114,7 +105,8 @@ def test_the_answers_are_not_written_unless_they_are_asked_for(
 def test_every_argument_reaches_the_run(
     argv: Callable[..., argparse.Namespace], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A flag that is parsed and then dropped is a flag that does nothing."""
+    """What was given on the command line arrives at the run unchanged."""
+
     argv(
         "--questions", str(tmp_path / "q.json"),
         "--category", "manuali",
@@ -135,6 +127,7 @@ def test_every_argument_reaches_the_run(
 def test_two_scopes_at_once_are_refused(
     argv: Callable[..., argparse.Namespace],
 ) -> None:
+    """A category and a document cannot be asked for together."""
     with pytest.raises(SystemExit):
         argv("--category", "manuali", "--document", MANUAL)
 
@@ -146,8 +139,11 @@ def test_a_run_that_writes_no_answer_never_builds_a_model(
     question_set: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A run of retrieval alone reaches no model and ranks every question."""
     def refuse() -> None:
         raise AssertionError("a run of retrieval alone built a model")
+
+    # Building a model would fail the test, so nothing may build one.
 
     monkeypatch.setattr("scripts.eval.build_chat_model", refuse)
 
@@ -166,6 +162,7 @@ def test_a_run_of_answers_writes_them_from_the_passages_it_found(
     question_set: Path,
     capsys: pytest.CaptureFixture,
 ) -> None:
+    """The answers come back on the results, and the run says how many."""
     model = FakeChatModel(replies=["Two years.", "Nothing much."])
 
     report = evaluate(
@@ -189,8 +186,11 @@ def test_judging_writes_the_answers_too(
     db_path: Path,
     question_set: Path,
 ) -> None:
-    """A judge with nothing to read is not a measurement, so it asks for both."""
+    """Asking for the judge asks for the answers as well."""
+
     model = FakeChatModel(replies=["Two years.", "yes", "Nothing much.", "yes"])
+
+    # Each question takes two replies: the answer, then the verdict on it.
 
     report = evaluate(
         questions_path=question_set,
@@ -210,7 +210,8 @@ def test_a_question_the_scope_does_not_cover_is_not_asked(
     question_set: Path,
     capsys: pytest.CaptureFixture,
 ) -> None:
-    """One set can be asked of several scopes; the rest is not a miss."""
+    """A question about a document outside the scope is left out of the run."""
+
     report = evaluate(
         questions_path=question_set,
         documents_dir=documents_dir,
@@ -224,14 +225,12 @@ def test_a_question_the_scope_does_not_cover_is_not_asked(
 
 @pytest.fixture
 def configured(monkeypatch: pytest.MonkeyPatch) -> Callable[..., Settings]:
-    """Point a run at settings a test can predict.
+    """Return a function that puts the given settings in place of the defaults.
 
-    Two patches of one object, because the name was resolved in two places:
-    `scripts.eval` imported it, and `build_retriever` reads `app.vectorstore`'s —
-    a module attribute set on one is not seen through the other's copy. In a real
-    run they are the same object, which is the state this puts back.
+    The fields given are merged into the usual test settings, and the result is
+    set on the two modules that read one: the command itself, and the store
+    lookup it goes through.
     """
-
     def point(**fields: object) -> Settings:
         same = make_settings(**fields)
         monkeypatch.setattr("scripts.eval.settings", same)
@@ -249,8 +248,8 @@ def test_the_header_names_the_reranker_the_run_used(
     capsys: pytest.CaptureFixture,
     configured: Callable[..., Settings],
 ) -> None:
-    """A reranked run and a plain one are handed a different question by the
-    store, so the line is what makes two reports comparable at all."""
+    """The header names the reranker and the cut it was run with."""
+
     configured(rerank="on", rerank_candidates=20, retrieval_k=5)
 
     evaluate(
@@ -271,6 +270,8 @@ def test_the_header_says_when_nothing_was_reranked(
     capsys: pytest.CaptureFixture,
     configured: Callable[..., Settings],
 ) -> None:
+    """With reranking off, the header says so."""
+
     configured(rerank="off")
 
     evaluate(
@@ -288,7 +289,8 @@ def test_a_document_read_whole_is_measured_without_a_ranking(
     capsys: pytest.CaptureFixture,
     configured: Callable[..., Settings],
 ) -> None:
-    """End to end, because the flag is the command's to pass and not the report's."""
+    """One document to find leaves no ordering, so no nDCG is printed."""
+
     configured(rerank="off", retrieval_k=5)
 
     report = evaluate(
@@ -315,12 +317,13 @@ def test_the_search_is_asked_for_the_cutoff_the_ranking_is_read_to(
     monkeypatch: pytest.MonkeyPatch,
     configured: Callable[..., Settings],
 ) -> None:
-    """Five passages and an nDCG@10 is a number about what was never retrieved.
+    """The search is asked for the wider of the console's k and the cutoff.
 
-    The other direction matters too: a console configured to show twenty is not
-    narrowed to ten to suit the metric, because the counts and the MRR are still
-    read over what the console would have answered from.
+    The console shows `retrieval_k` passages and nDCG is read over the cutoff.
+    Asking for the smaller of the two would report a number about passages the
+    search never returned, so the wider of the two is asked for.
     """
+
     asked: list[int | None] = []
     build = build_scoped_retriever
 
@@ -347,14 +350,13 @@ def test_what_was_found_is_read_over_what_the_console_shows(
     monkeypatch: pytest.MonkeyPatch,
     configured: Callable[..., Settings],
 ) -> None:
-    """The other half of asking for ten: the four numbers about finding something
-    are read over the console's own five.
+    """The ranks and the hit counts stop at the passages the console shows.
 
-    Reading them over the wider pool the search was asked for would count a
-    document at position eight as found — returned to the harness, never to the
-    reader, and not in the answer the run wrote. Which is the number moving
-    silently: a whole-document scope is read whole, so its scope says `None`.
+    The search is asked for more of them so that a ranking has ten to be read
+    to the end of, and what was found is read over the console's own k, which
+    is what the answer is written from.
     """
+
     read: list[int | None] = []
     real = run_evals
     called: list[object] = []
@@ -384,8 +386,8 @@ def test_a_document_read_whole_is_read_whole_by_the_numbers_too(
     monkeypatch: pytest.MonkeyPatch,
     configured: Callable[..., Settings],
 ) -> None:
-    """A whole-document scope has no fifth of it to stop at: its passages are the
-    document, and the page the question named can be past the console's k."""
+    """A whole-document scope has no count to stop at, so nothing is cut."""
+
     read: list[int | None] = []
     real = run_evals
 
@@ -409,6 +411,7 @@ def test_a_document_read_whole_is_read_whole_by_the_numbers_too(
 def test_a_question_set_that_cannot_be_read_is_a_message(
     library: FakeVectorStore, documents_dir: Path, db_path: Path, tmp_path: Path
 ) -> None:
+    """A question set that is not there is a message, not a traceback."""
     with pytest.raises(SystemExit, match="No question set"):
         evaluate(
             questions_path=tmp_path / "nothing.json",
@@ -423,6 +426,7 @@ def test_a_scope_that_is_not_there_is_a_message(
     db_path: Path,
     question_set: Path,
 ) -> None:
+    """A scope with no documents in it is a message, not a traceback."""
     with pytest.raises(SystemExit, match="No indexed documents"):
         evaluate(
             questions_path=question_set,
@@ -433,6 +437,7 @@ def test_a_scope_that_is_not_there_is_a_message(
 
 
 def test_the_report_says_what_was_found(capsys: pytest.CaptureFixture) -> None:
+    """A line per question, then the numbers those questions added up to."""
     print_report(
         EvalReport(results=[
             QuestionResult(
@@ -475,12 +480,12 @@ def test_the_report_says_what_was_found(capsys: pytest.CaptureFixture) -> None:
 def test_a_whole_document_scope_reports_no_ranking(
     capsys: pytest.CaptureFixture,
 ) -> None:
-    """The passages come back in reading order, so there is no ranking to read.
+    """A run over one document prints a rank and no nDCG.
 
-    What the other numbers say about such a scope still stands — the document is
-    either among the passages or it is not — and only the one that is about order
-    is left out.
+    A whole-document scope returns the document itself, so there is no order
+    of passages for a ranking to be read on.
     """
+
     print_report(
         EvalReport(results=[
             QuestionResult(
@@ -503,7 +508,8 @@ def test_a_whole_document_scope_reports_no_ranking(
 def test_a_report_with_nothing_measured_says_so_and_no_more(
     capsys: pytest.CaptureFixture,
 ) -> None:
-    """A rate over no questions is not a number, and is left out rather than faked."""
+    """With nothing measured, the report says so and prints no numbers."""
+
     print_report(
         EvalReport(results=[
             QuestionResult(question=Question(id="fuori", question="Chi ha vinto?"))
@@ -520,6 +526,7 @@ def test_a_report_with_nothing_measured_says_so_and_no_more(
 def test_a_question_that_could_not_be_asked_is_not_a_miss(
     capsys: pytest.CaptureFixture,
 ) -> None:
+    """A question the search failed on is printed as failed, not as a miss."""
     print_report(
         EvalReport(results=[
             QuestionResult(

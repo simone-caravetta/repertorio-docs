@@ -1,9 +1,11 @@
-"""The eval harness: reading a question set, and measuring what came back.
+"""Tests for the measurement a question set gives a search.
 
-Nothing here touches a model, a network or the library: the retriever is a
-stand-in that hands back whatever a test says it should, and the models are the
-suite's fake. What is measured against the real documents is measured by running
-`python -m scripts.eval`, which is a measurement and not a test.
+A question names the document its answer should come from, and sometimes the
+page of it. What the search returned is read against that: the rank the
+document came at, a grade for each passage in the order it arrived, and the
+numbers the report is printed from. The answer half is covered here too, from
+the passages the search returned to the judge that reads the answer against
+them.
 """
 
 from __future__ import annotations
@@ -36,11 +38,11 @@ REPORT = "reports/report.pdf"
 
 
 class Retriever:
-    """A retriever that hands back what a test says it should, per question.
+    """A stand-in for the search, answering from a fixed table of passages.
 
-    The harness calls `invoke`, so that is all this is: no ranking of its own, and
-    the passages come back in the order the test wrote them, which is what makes
-    a rank assertable.
+    Each query is written down, so a test can say which questions reached the
+    search and which did not. The passages for a query come back in the order
+    the test wrote them, and nothing here embeds anything or touches a store.
     """
 
     def __init__(self, passages: dict[str, list[Document]] | None = None) -> None:
@@ -50,12 +52,13 @@ class Retriever:
     def invoke(
         self, query: str, config: object = None, **kwargs: object
     ) -> list[Document]:
+        """Return the passages written for that query, and note the query."""
         self.queries.append(query)
         return self.passages.get(query, [])
 
 
 class BrokenRetriever:
-    """A search that cannot run, which is a question's result and not the run's."""
+    """A search that raises, as a store that cannot be reached would."""
 
     def invoke(
         self, query: str, config: object = None, **kwargs: object
@@ -64,22 +67,24 @@ class BrokenRetriever:
 
 
 def passage(source: str, page: int, text: str = "a passage") -> Document:
-    """A chunk, with its page written the way the store keeps it: from zero.
+    """One returned passage, taken from a page of a document.
 
-    Which is not the way a question set writes one — a question names the page a
-    reader would turn to — and the two are a page apart on purpose. A test that
-    wants a passage on the reader's page 9 says 8 here.
+    The page is the one the metadata carries, counted from zero, which is what
+    a store hands back and what the reading side turns into a page number.
     """
+
     return Document(page_content=text, metadata={"source": source, "page": page})
 
 
 def written_set(tmp_path: Path, *questions: dict[str, Any]) -> Path:
+    """Write those questions to a file, as a question set is written."""
     path = tmp_path / "questions.json"
     path.write_text(json.dumps(list(questions)), encoding="utf-8")
     return path
 
 
 def question(**overrides: Any) -> Question:
+    """A question about the manual, with any field the test names replaced."""
     values: dict[str, Any] = {
         "id": "garanzia",
         "question": "Quanti anni di garanzia?",
@@ -89,10 +94,13 @@ def question(**overrides: Any) -> Question:
     return Question(**values)
 
 
-# --- reading a set ---------------------------------------------------------
+# A question set is a file written by hand, so every way of getting it wrong is
+# answered with a sentence naming the question and the field at fault, rather
+# than with a traceback from somewhere inside the reader.
 
 
 def test_a_question_set_is_read_in_order(tmp_path: Path) -> None:
+    """Every field of an entry is read, in the order the file holds them."""
     path = written_set(
         tmp_path,
         {"id": "uno", "question": "Prima?", "document": MANUAL},
@@ -117,11 +125,13 @@ def test_a_question_set_is_read_in_order(tmp_path: Path) -> None:
 
 
 def test_a_missing_file_is_said_so(tmp_path: Path) -> None:
+    """A path with no file behind it reads as a message."""
     with pytest.raises(ValueError, match="No question set"):
         load_questions(tmp_path / "nothing.json")
 
 
 def test_a_file_that_is_not_json_names_the_line(tmp_path: Path) -> None:
+    """A file that does not parse gives the line to look at."""
     path = tmp_path / "questions.json"
     path.write_text('[{"id": "uno",}]', encoding="utf-8")
 
@@ -130,6 +140,7 @@ def test_a_file_that_is_not_json_names_the_line(tmp_path: Path) -> None:
 
 
 def test_a_set_that_is_not_a_list_is_refused(tmp_path: Path) -> None:
+    """A set is a list of questions, and anything else is refused."""
     path = tmp_path / "questions.json"
     path.write_text('{"id": "uno"}', encoding="utf-8")
 
@@ -138,12 +149,13 @@ def test_a_set_that_is_not_a_list_is_refused(tmp_path: Path) -> None:
 
 
 def test_a_question_with_no_question_is_refused(tmp_path: Path) -> None:
+    """An entry with no question names its place in the set."""
     with pytest.raises(ValueError, match="question 1 of .* has no question"):
         load_questions(written_set(tmp_path, {"id": "uno"}))
 
 
 def test_a_misspelled_field_is_refused(tmp_path: Path) -> None:
-    """A field nothing reads is a question that measures less than it looks like."""
+    """A field the set does not have is refused, and named."""
     path = written_set(
         tmp_path,
         {"id": "uno", "question": "Prima?", "document": MANUAL, "contians": ["x"]},
@@ -154,6 +166,7 @@ def test_a_misspelled_field_is_refused(tmp_path: Path) -> None:
 
 
 def test_a_page_counted_from_zero_is_refused(tmp_path: Path) -> None:
+    """A page is the reader's number, so zero is not one of them."""
     path = written_set(
         tmp_path, {"id": "uno", "question": "Prima?", "document": MANUAL, "page": 0}
     )
@@ -163,6 +176,7 @@ def test_a_page_counted_from_zero_is_refused(tmp_path: Path) -> None:
 
 
 def test_a_page_that_is_not_a_number_is_refused(tmp_path: Path) -> None:
+    """A page written as text is refused the same way zero is."""
     path = written_set(
         tmp_path,
         {"id": "uno", "question": "Prima?", "document": MANUAL, "page": "3"},
@@ -173,6 +187,7 @@ def test_a_page_that_is_not_a_number_is_refused(tmp_path: Path) -> None:
 
 
 def test_a_contains_that_is_not_a_list_is_refused(tmp_path: Path) -> None:
+    """What a correct answer holds is a list of strings, and nothing else."""
     path = written_set(
         tmp_path,
         {"id": "uno", "question": "Prima?", "document": MANUAL, "contains": "due"},
@@ -183,7 +198,7 @@ def test_a_contains_that_is_not_a_list_is_refused(tmp_path: Path) -> None:
 
 
 def test_two_questions_with_one_id_are_refused(tmp_path: Path) -> None:
-    """An id is what tells two runs apart; two of them make one unusable."""
+    """An id tells two runs apart, so it is held to once per set."""
     path = written_set(
         tmp_path,
         {"id": "uno", "question": "Prima?", "document": MANUAL},
@@ -197,6 +212,7 @@ def test_two_questions_with_one_id_are_refused(tmp_path: Path) -> None:
 def test_a_question_the_library_does_not_answer_may_name_no_document(
     tmp_path: Path,
 ) -> None:
+    """A question with no document is read, and holds no document."""
     path = written_set(tmp_path, {"id": "fuori", "question": "Chi ha vinto?"})
 
     (question,) = load_questions(path)
@@ -204,10 +220,12 @@ def test_a_question_the_library_does_not_answer_may_name_no_document(
     assert question.document is None
 
 
-# --- measuring a search ----------------------------------------------------
+# What one question did to the search: where the document came, which page of
+# it came, and whether the question was asked of this scope at all.
 
 
 def test_a_passage_of_the_expected_document_is_a_hit() -> None:
+    """The expected document at the top of the ranking is rank one."""
     retriever = Retriever({"Prima?": [passage(MANUAL, 1), passage(REPORT, 1)]})
 
     report = run_evals(
@@ -219,6 +237,7 @@ def test_a_passage_of_the_expected_document_is_a_hit() -> None:
 
 
 def test_nothing_from_the_expected_document_is_a_miss() -> None:
+    """A ranking of another document leaves the rank unset."""
     retriever = Retriever({"Prima?": [passage(REPORT, 1)]})
 
     report = run_evals(
@@ -229,6 +248,7 @@ def test_nothing_from_the_expected_document_is_a_miss() -> None:
 
 
 def test_the_rank_is_where_the_document_was_found() -> None:
+    """Every passage above it counts, from whatever document it came from."""
     retriever = Retriever({
         "Prima?": [passage(REPORT, 1), passage(REPORT, 2), passage(MANUAL, 5)]
     })
@@ -241,7 +261,8 @@ def test_the_rank_is_where_the_document_was_found() -> None:
 
 
 def test_a_page_is_measured_on_its_own() -> None:
-    """The document can be found and the page that answers the question not be."""
+    """The document and the page it was found on are read separately."""
+
     retriever = Retriever({"Prima?": [passage(MANUAL, 2), passage(MANUAL, 8)]})
 
     report = run_evals(
@@ -255,7 +276,8 @@ def test_a_page_is_measured_on_its_own() -> None:
 
 
 def test_the_page_is_counted_as_a_reader_counts_it() -> None:
-    """A reader's page 12 is the store's `page` 11, and both halves know it."""
+    """The metadata counts from zero, so page 12 is the one stored as 11."""
+
     retriever = Retriever({"Prima?": [passage(MANUAL, 11)]})
 
     report = run_evals(
@@ -268,6 +290,7 @@ def test_the_page_is_counted_as_a_reader_counts_it() -> None:
 
 
 def test_a_question_that_names_no_page_has_no_page_rank() -> None:
+    """A question without a page has nothing to narrow the search to."""
     retriever = Retriever({"Prima?": [passage(MANUAL, 3)]})
 
     report = run_evals(
@@ -279,6 +302,7 @@ def test_a_question_that_names_no_page_has_no_page_rank() -> None:
 
 
 def test_a_question_outside_the_scope_is_not_asked() -> None:
+    """A document outside the scope means the search is never called."""
     retriever = Retriever({"Prima?": [passage(MANUAL, 1)]})
 
     report = run_evals(
@@ -290,6 +314,7 @@ def test_a_question_outside_the_scope_is_not_asked() -> None:
 
 
 def test_a_question_with_no_document_is_asked_of_the_whole_scope() -> None:
+    """With no document to look for, the question is asked and not ranked."""
     retriever = Retriever({"Prima?": [passage(MANUAL, 1)]})
 
     report = run_evals(
@@ -304,6 +329,7 @@ def test_a_question_with_no_document_is_asked_of_the_whole_scope() -> None:
 
 
 def test_a_search_that_fails_is_one_question_and_not_the_run() -> None:
+    """A search that raises is recorded against that question, and no more."""
     report = run_evals(
         [question(question="Prima?")], retriever=BrokenRetriever(), in_scope=[MANUAL]
     )
@@ -313,21 +339,25 @@ def test_a_search_that_fails_is_one_question_and_not_the_run() -> None:
 
 
 def test_the_rows_of_the_answer_are_the_passages_the_search_returned() -> None:
+    """The passages are kept as the console would have shown them."""
     retriever = Retriever({"Prima?": [passage(MANUAL, 4, "the warranty is two years")]})
 
     report = run_evals(
         [question(question="Prima?")], retriever=retriever, in_scope=[MANUAL]
     )
 
+    # The page is the reader's, and the passage has no offsets to draw on.
     assert report.results[0].sources == [
         {"source": MANUAL, "page": 5, "ranges": []}
     ]
 
 
-# --- measuring an answer ---------------------------------------------------
+# The answer half. It is written from the passages the search returned, so a
+# question the search missed cannot be rescued by a good answer later on.
 
 
 def test_no_answer_is_written_unless_a_model_is_given() -> None:
+    """A run of retrieval alone reaches no model and writes no answer."""
     retriever = Retriever({"Prima?": [passage(MANUAL, 1)]})
 
     report = run_evals(
@@ -338,7 +368,8 @@ def test_no_answer_is_written_unless_a_model_is_given() -> None:
 
 
 def test_the_answer_is_written_from_the_passages_that_were_found() -> None:
-    """The half that costs money is measured on the search that was measured."""
+    """The prompt carries the found text and the question it answers."""
+
     retriever = Retriever({"Prima?": [passage(MANUAL, 4, "the warranty is two years")]})
     model = FakeChatModel(replies=["Two years."])
 
@@ -349,6 +380,7 @@ def test_the_answer_is_written_from_the_passages_that_were_found() -> None:
         chat_model=model,
     )
 
+    # The human message is the one holding the context and the question.
     asked = model.prompts[0][1].content
 
     assert "the warranty is two years" in asked
@@ -356,6 +388,7 @@ def test_the_answer_is_written_from_the_passages_that_were_found() -> None:
 
 
 def test_an_answer_that_does_not_hold_what_was_expected_is_reported_missing() -> None:
+    """Only the expected text the answer misses is reported."""
     retriever = Retriever({"Prima?": [passage(MANUAL, 1)]})
     model = FakeChatModel(replies=["Two years, and it renews."])
 
@@ -370,6 +403,7 @@ def test_an_answer_that_does_not_hold_what_was_expected_is_reported_missing() ->
 
 
 def test_an_answer_that_fails_ends_that_question() -> None:
+    """A model call that raises leaves an error and no answer."""
     retriever = Retriever({"Prima?": [passage(MANUAL, 1)]})
     model = FakeChatModel(replies=[])
 
@@ -385,14 +419,17 @@ def test_an_answer_that_fails_ends_that_question() -> None:
 
 
 def test_case_and_spacing_do_not_matter_in_what_was_expected() -> None:
+    """The comparison reads words, so case and runs of spaces are ignored."""
     assert missing_from("Due   anni di garanzia.", ["due anni"]) == []
     assert missing_from("Two years.", ["due anni"]) == ["due anni"]
 
 
-# --- the judge -------------------------------------------------------------
+# The judge is a second model call per question. It reads the answer against
+# the passages it was written from, and says what, if anything, is not there.
 
 
 def test_a_judge_that_says_yes_is_faithful() -> None:
+    """A verdict of yes leaves nothing unsupported behind it."""
     retriever = Retriever({"Prima?": [passage(MANUAL, 1, "two years")]})
     answers = FakeChatModel(replies=["Two years."])
     judge = FakeChatModel(replies=["yes"])
@@ -410,6 +447,7 @@ def test_a_judge_that_says_yes_is_faithful() -> None:
 
 
 def test_a_judge_that_says_no_keeps_the_claims() -> None:
+    """What follows a no is the list of claims the passages do not hold."""
     retriever = Retriever({"Prima?": [passage(MANUAL, 1, "two years")]})
     answers = FakeChatModel(replies=["Two years, and it renews."])
     judge = FakeChatModel(replies=["no\nand it renews"])
@@ -427,6 +465,7 @@ def test_a_judge_that_says_no_keeps_the_claims() -> None:
 
 
 def test_the_judge_reads_the_answer_against_the_passages() -> None:
+    """The prompt holds the context and the answer under it."""
     retriever = Retriever({"Prima?": [passage(MANUAL, 1, "two years")]})
     answers = FakeChatModel(replies=["Two years."])
     judge = FakeChatModel(replies=["yes"])
@@ -446,6 +485,7 @@ def test_the_judge_reads_the_answer_against_the_passages() -> None:
 
 
 def test_a_judge_that_cannot_be_asked_is_not_a_verdict() -> None:
+    """A judge that fails is recorded apart from the question's own error."""
     retriever = Retriever({"Prima?": [passage(MANUAL, 1)]})
     answers = FakeChatModel(replies=["Two years."])
 
@@ -477,18 +517,22 @@ def test_a_judge_that_cannot_be_asked_is_not_a_verdict() -> None:
 def test_a_reply_is_read_as_the_verdict_it_opens_with(
     reply: str, verdict: bool | None
 ) -> None:
+    """The first word decides, and anything else is no verdict at all."""
     assert read_verdict(reply)[0] is verdict
 
 
 def test_a_verdict_of_no_keeps_what_follows_it() -> None:
+    """The lines under a no are the claims the judge listed."""
     _, claims = read_verdict("no\n\nthe price is not there\nand the date is wrong")
 
     assert claims == ["the price is not there", "and the date is wrong"]
 
 
-# --- the numbers -----------------------------------------------------------
+# What a whole run comes to, over the questions it was able to measure.
+
 
 def test_the_numbers_add_up() -> None:
+    """Three measurable questions, one of them missed, and one page asked."""
     report = EvalReport(results=[
         QuestionResult(question=question(id="uno"), rank=1, grades=(1, 0)),
         QuestionResult(
@@ -506,15 +550,15 @@ def test_the_numbers_add_up() -> None:
     assert (summary.measurable, summary.hits) == (3, 2)
     assert (summary.page_asked, summary.page_hits) == (1, 0)
     assert summary.reciprocal_rank == pytest.approx((1 + 1 / 3) / 3)
-    # The first found the document first, which is the best order it had: 1.0.
-    # The second found the document and not the page, and put the one passage of
-    # it third — against the ideal, which is that passage first: 1/log2(4). The
-    # third was missed: 0, and it is in the divisor, so a miss pulls the mean down
-    # rather than being left out of it.
+
+    # Every measurable question counts, the one the search missed included:
+    # its grades are all zero, and it pulls the mean down.
+
     assert summary.ndcg == pytest.approx((1.0 + 1 / log2(4) + 0.0) / 3)
 
 
 def test_a_run_with_nothing_to_measure_has_no_rank() -> None:
+    """With nothing measurable the two means are zero, not a division."""
     report = EvalReport(results=[QuestionResult(question=question(id="saltata"), asked=False)])
 
     summary = summarise(report)
@@ -524,6 +568,7 @@ def test_a_run_with_nothing_to_measure_has_no_rank() -> None:
 
 
 def test_a_failed_search_scores_no_better_than_a_missed_one() -> None:
+    """A search that raised is a question that found nothing."""
     report = EvalReport(results=[
         QuestionResult(
             question=question(id="uno"), error="the index is unreachable"
@@ -533,19 +578,20 @@ def test_a_failed_search_scores_no_better_than_a_missed_one() -> None:
     assert summarise(report).ndcg == 0.0
 
 
-# --- nDCG ------------------------------------------------------------------
+# nDCG, on lists of grades alone: what the number is measured against, and
+# where the best order of the same passages sits.
 
 
 def test_the_best_order_the_passages_allowed_scores_one() -> None:
+    """A ranking that already holds the best of its own grades scores 1."""
     assert ndcg_at((2, 1, 0)) == pytest.approx(1.0)
     assert ndcg_at((1, 0)) == pytest.approx(1.0)
     assert ndcg_at(()) == 0.0
 
 
 def test_the_right_page_below_a_wrong_one_does_not() -> None:
-    # The page that answers is second, behind a passage of the same document:
-    # 1 at the top and 2 discounted by log2(3), against the other order of the
-    # same two, which is 2 at the top and 1 below it.
+    """A good passage under a poor one scores below the two reversed."""
+
     assert ndcg_at((1, 2)) == pytest.approx(
         (1 + 2 / log2(3)) / (2 + 1 / log2(3))
     )
@@ -553,33 +599,36 @@ def test_the_right_page_below_a_wrong_one_does_not() -> None:
 
 
 def test_the_same_passage_lower_down_scores_less() -> None:
+    """One grade at the top is worth more than the same grade at the bottom."""
     assert ndcg_at((0, 0, 2, 0)) == pytest.approx((2 / log2(4)) / 2)
     assert ndcg_at((0, 0, 2, 0)) < ndcg_at((2, 0, 0, 0))
 
 
 def test_a_ranking_that_found_nothing_scores_nothing() -> None:
-    """Nothing relevant is an ideal of zero, which is 0 rather than a division."""
+    """Nothing relevant to find is a score of zero, not a division."""
     assert ndcg_at((0, 0, 0)) == 0.0
     assert ndcg_at(()) == 0.0
 
 
 def test_ordering_is_read_against_what_the_search_returned() -> None:
-    """Right document, wrong page, best order, is 1.0 — and that is deliberate.
+    """Two relevant passages in either order are the ideal between them.
 
-    The ideal is the passages that came back, so a search is not punished for
-    what it never retrieved: its ordering was not the problem, and the page rate
-    printed beside it is what says the page was missed.
+    The ideal is built from the grades that came back, so two of them at the
+    top score 1 whichever way round they are. Moving one of them under an
+    irrelevant passage stops being the best order those passages allowed.
     """
+
     assert ndcg_at((1, 1, 0)) == pytest.approx(1.0)
     assert ndcg_at((0, 1, 1)) < 1.0
 
 
 def test_the_numbers_about_finding_are_read_over_what_was_shown() -> None:
-    """A call asks the search for more than the console shows, so that a ranking
-    has ten passages to be read to the end of. The two are not the same number,
-    and a document at position six came back to the harness and never to the
-    reader: counting it as found would report a search the console does not have.
+    """The ranks stop at the cutoff the console shows, the grades do not.
+
+    Six passages come back with the expected document last. A run that reads
+    five of them reports a miss, and grades the whole ranking either way.
     """
+
     retriever = Retriever({
         "Prima?": [passage(REPORT, 1) for _ in range(5)] + [passage(MANUAL, 1)]
     })
@@ -596,14 +645,14 @@ def test_the_numbers_about_finding_are_read_over_what_was_shown() -> None:
 
     assert everything.results[0].rank == 6
     assert shown.results[0].rank is None
-    # The ordering is still read over the whole of it: what a question scores for
-    # the order of the passages does not depend on how many of them were shown.
+
+    # nDCG reads the ranking in full in both runs, so the grades agree.
     assert shown.results[0].grades == everything.results[0].grades
 
 
 def test_a_run_with_no_read_at_reads_everything_it_was_given() -> None:
-    """What a whole-document scope needs: its passages are the document, and
-    there is no fifth of it to stop at."""
+    """With no cutoff given, every passage that came back is read."""
+
     retriever = Retriever({
         "Prima?": [passage(REPORT, 1) for _ in range(5)] + [passage(MANUAL, 1)]
     })
@@ -616,14 +665,16 @@ def test_a_run_with_no_read_at_reads_everything_it_was_given() -> None:
 
 
 def test_a_passage_past_the_cutoff_is_not_read() -> None:
-    """A cutoff that is not read is a cutoff that would flatter a long ranking."""
+    """Only the grades above the cutoff are read, and zero reads none."""
+
     assert ndcg_at((2,), cutoff=1) == pytest.approx(1.0)
     assert ndcg_at((0, 2), cutoff=1) == 0.0
     assert ndcg_at((2,), cutoff=0) == 0.0
 
 
 def test_the_cutoff_is_ten_by_default() -> None:
-    """Ten, not five: the console's own k is a different number and not this one."""
+    """Ten is the default, so a relevant passage past it scores nothing."""
+
     below = (0,) * (NDCG_CUTOFF - 1) + (2,)
     past = (0,) * NDCG_CUTOFF + (2,)
 
@@ -632,10 +683,12 @@ def test_the_cutoff_is_ten_by_default() -> None:
     assert ndcg_at(past) == 0.0
 
 
-# --- what the passages are graded by ---------------------------------------
+# How good one returned passage is for one question, which is what a ranking
+# is read on: the document the answer comes from, and the page of it.
 
 
 def test_a_passage_is_graded_on_the_page_the_question_named() -> None:
+    """A page of the document is graded 2, another page of it 1, and rest 0."""
     retriever = Retriever({
         "Prima?": [
             passage(REPORT, 0),
@@ -648,13 +701,14 @@ def test_a_passage_is_graded_on_the_page_the_question_named() -> None:
         [question(question="Prima?", page=2)], retriever=retriever
     )
 
-    # Another document, then the right document on another page, then the page
-    # itself. The middle one is worth something: it is where the answer is not,
-    # inside the document it is in.
+    # Read down the ranking: another document is 0, the document on another
+    # page is 1, and the page the question named is 2.
+
     assert report.results[0].grades == (0, 1, 2)
 
 
 def test_a_question_that_named_no_page_has_one_grade_to_give() -> None:
+    """With no page named, a passage is graded on its document alone."""
     retriever = Retriever({"Prima?": [passage(REPORT, 0), passage(MANUAL, 3)]})
 
     report = run_evals([question(question="Prima?")], retriever=retriever)
@@ -663,6 +717,7 @@ def test_a_question_that_named_no_page_has_one_grade_to_give() -> None:
 
 
 def test_a_search_that_returned_nothing_has_no_grades() -> None:
+    """No passages means no grades, and a run that scores nothing."""
     report = run_evals([question(question="Prima?")], retriever=Retriever({}))
 
     assert report.results[0].grades == ()
@@ -670,6 +725,7 @@ def test_a_search_that_returned_nothing_has_no_grades() -> None:
 
 
 def test_a_question_that_could_not_be_asked_has_no_grades() -> None:
+    """A question outside the scope is not asked and grades nothing."""
     report = run_evals(
         [question(question="Prima?")], retriever=Retriever({}), in_scope=[REPORT]
     )
@@ -679,6 +735,7 @@ def test_a_question_that_could_not_be_asked_has_no_grades() -> None:
 
 
 def test_a_failed_search_is_counted_as_a_failure() -> None:
+    """A failed search is a failure and a question that found nothing."""
     report = EvalReport(results=[
         QuestionResult(question=question(id="uno"), error="the index is unreachable"),
     ])
@@ -691,10 +748,11 @@ def test_a_failed_search_is_counted_as_a_failure() -> None:
 
 
 def test_rank_of_ignores_a_document_it_was_not_asked_about() -> None:
+    """With no document there is no rank, and a page narrows the search."""
     passages = [passage(REPORT, 1), passage(MANUAL, 1)]
 
     assert rank_of(passages, None) is None
     assert rank_of(passages, MANUAL) == 2
-    # The chunk is on the reader's page 2, and this asks for the third.
+
     assert rank_of(passages, MANUAL, page=2) == 2
     assert rank_of(passages, MANUAL, page=3) is None

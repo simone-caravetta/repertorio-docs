@@ -1,3 +1,15 @@
+"""The question and answer graph.
+
+Three nodes run in order. The first rewrites the question together with the
+conversation so far, so that a follow-up such as "and for minors?" becomes a
+question that stands on its own. The second searches with that question and
+builds the context. The third sends the question and the context to the chat
+model.
+
+The state is checkpointed, which is what carries a conversation from one
+question to the next.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -21,11 +33,21 @@ from app.vectorstore import get_retriever
 
 
 class RAGState(MessagesState):
+    """What the nodes pass to one another.
+
+    `messages` holds the conversation. The other three fields hold the work of
+    one turn, which is the question after it was rewritten, the passages that
+    were found and the context built from them.
+    """
+
     contextualized_question: str
     retrieved_documents: list[dict[str, Any]]
     context: str
 
 
+# Used by the first node. It rewrites the question so that it can be understood
+# without the conversation, and it is told not to name a document, because the
+# documents to search are already decided by the scope.
 contextualize_prompt = ChatPromptTemplate.from_messages([
     (
         "system",
@@ -55,6 +77,9 @@ New question:
     ),
 ])
 
+# Used by the third node. It writes the answer from the context alone, and it is
+# told that the context also carries what the catalog says about the documents,
+# which is what makes a question about the library itself answerable.
 answer_prompt = ChatPromptTemplate.from_messages([
     (
         "system",
@@ -102,24 +127,14 @@ def format_context(
     in_scope: Sequence[str] | None = None,
     descriptions: Mapping[str, str] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Render retrieved chunks as the context block, beside the sources to cite.
+    """Build the context the answer is written from.
 
-    `in_scope` opens the block with the documents the search was run over. It is
-    the one thing the passages cannot say: a similarity search returns what is
-    closest to the question, so a question about the library itself — which
-    documents there are, how many — is answered by whatever the search happened
-    to hit, and a model holding only those names them as the library. The scope
-    knows better, and this is where the answer is told.
+    The context opens with the documents the search was over and what the
+    catalog says about each. Under that come the passages, each one labelled
+    with its source and its page.
 
-    `descriptions` goes under that list, one line per document that has one. The
-    passages are what the search found, which is a sample of what a document
-    holds; what the catalog says about it is not a sample, and it is there for
-    every document in scope rather than for the ones the search reached.
-
-    Each row says where its passage sits as well as where it came from: the page
-    is what a reader turns to, and the ranges are what a client draws on it. Both
-    are the chunk's own metadata, the page turned round into the number a reader
-    counts and the offsets left as the reader wrote them.
+    Returns the context and a row per passage, which is what the page shows as
+    the sources of an answer.
     """
     context_parts: list[str] = []
     source_rows: list[dict[str, Any]] = []
@@ -153,18 +168,10 @@ def format_context(
 
 
 def ranges_in(metadata: Mapping[str, Any]) -> list[list[int]]:
-    """Where in its page's text a passage sits, as one range, or as none.
+    """The character ranges a chunk covers, as pairs of offsets.
 
-    A chunk indexed before the reader wrote offsets has neither an offset nor a
-    way to be placed, and says so with an empty list. A range of zeros would be a
-    confident answer to a question that was never asked: the first line of the
-    page, drawn from a passage that may be anywhere on it.
-
-    The offsets arrive as whatever the store read them back as, which is why they
-    go through `whole_number` and not a comparison of types. A range that starts
-    before the beginning of the page is left out for the same reason a missing
-    one is: this list is a promise that the endpoint can be asked for these, and
-    a range it would refuse is not one to send.
+    A chunk without a usable range gives an empty list, so that a reader is not
+    sent to a range that points somewhere else.
     """
     start, end = whole_number(metadata.get("start")), whole_number(metadata.get("end"))
 
@@ -175,13 +182,10 @@ def ranges_in(metadata: Mapping[str, Any]) -> list[list[int]]:
 
 
 def unique_sources(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """One row per place a passage came from, carrying every range found there.
+    """The rows with the repeats merged.
 
-    Four chunks of one page are one source, and the first mention is the one
-    kept, so the list reads in the order the passages were found. What the rows
-    it drops held is not thrown away with them: their ranges are the other
-    passages of that page, and a page cited four times would otherwise be a page
-    a client can point at once.
+    Two passages of the same document on the same page become one row, and their
+    ranges are joined together. The order the rows first appeared in is kept.
     """
     unique: list[dict[str, Any]] = []
     at: dict[tuple[Any, Any], dict[str, Any]] = {}
@@ -202,12 +206,7 @@ def unique_sources(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _as_ranges(value: Any) -> list[list[int]]:
-    """What a row holds under `ranges`, as a list of its own.
-
-    Copied rather than kept as it is: these rows come out of the graph's state,
-    which outlives the call, so a row merged where it lies would come back to the
-    next read of the same conversation with its own ranges on it twice.
-    """
+    """The value as a list of ranges, or an empty list for anything else."""
     if not isinstance(value, list):
         return []
 
@@ -222,30 +221,13 @@ def build_graph(
     in_scope: Sequence[str] | None = None,
     descriptions: Mapping[str, str] | None = None,
 ) -> CompiledStateGraph:
-    """Wire the graph around the model that answers and the retriever that searches.
+    """Build the graph of the three steps and compile it.
 
-    Both are arguments rather than objects built here, so the graph can be run
-    against any pair of them: a fake model and a fake retriever in the tests, a
-    local server and Pinecone in use. The retriever falls back to the Pinecone
-    one, built on first use — opening it at build time would load the embedding
-    model before the console has asked anything.
-
-    The checkpointer falls back to memory, which is what a console session wants:
-    it is a session, and its history is not worth a file. A server hands in a
-    persistent one instead, because a conversation that ends when the process
-    does is the thing it exists not to have.
-
-    `in_scope` is the documents the searches are run over, for a caller that has
-    resolved a scope and knows: it is what the answer is told, so that a question
-    about the library is answered from the library rather than from the passages
-    the search happened to return. A graph built without it searches the same way
-    and says less about it.
-
-    `descriptions` is what the catalog says about those documents, for the ones
-    that have been described. It is what makes "what does each of them contain?"
-    answerable at all: the search returns passages of the documents that match the
-    question, and a document it did not return is otherwise one the answer has
-    nothing to say about.
+    `chat_model` writes both the rewritten question and the answer. The
+    retriever falls back to the one built from the settings. `in_scope` names
+    the documents the search runs over and `descriptions` holds what the catalog
+    says about them. The checkpointer stores the conversation between turns and
+    defaults to one kept in memory.
     """
     contextualize_chain = contextualize_prompt | chat_model | StrOutputParser()
 
@@ -304,19 +286,15 @@ def build_graph(
 
 @lru_cache(maxsize=1)
 def get_app() -> CompiledStateGraph:
-    """The graph over the whole library, built once per process, on first use.
-
-    A console that was given a scope builds its own graph instead: the state of a
-    conversation lives in the checkpointer of the graph that ran it.
-    """
+    """The graph the commands share, built once per process."""
     return build_graph(chat_model=build_chat_model())
 
 
 def thread_config(thread_id: str) -> dict[str, Any]:
-    """The config naming one conversation, for every call that touches one.
+    """The configuration that names a conversation.
 
-    A thread id is the whole of what a conversation is: the same id on the next
-    question continues it, and the same id after a restart finds it again.
+    Everything the checkpointer stores is filed under this thread id, which is
+    what keeps two conversations apart.
     """
     return {"configurable": {"thread_id": thread_id}}
 
@@ -324,26 +302,20 @@ def thread_config(thread_id: str) -> dict[str, Any]:
 def get_thread_state(
     config: dict[str, Any], graph: CompiledStateGraph | None = None
 ):
-    """What the conversation has produced so far, on the graph that ran it."""
+    """The stored state of a conversation."""
     return (graph or get_app()).get_state(config)
 
 
 async def read_thread_state(config: dict[str, Any], graph: CompiledStateGraph):
-    """The same, read the other way round.
-
-    Async because a persistent checkpointer is: with a saver that has to reach a
-    file, the synchronous call above blocks the event loop, so a server reads its
-    threads through here while the console — whose saver is in memory — keeps the
-    synchronous one it has always used.
-    """
+    """The stored state of a conversation, read asynchronously."""
     return await graph.aget_state(config)
 
 
 def turns_from(state) -> list[dict[str, str]]:
-    """The conversation as the turns a page renders, oldest first.
+    """A conversation as a list of turns, each with its role and its text.
 
-    Only what was said: the tool messages and the traffic of the nodes are in the
-    state too, and none of it is a conversation.
+    Messages from neither the user nor the model are left out, and so is a
+    message whose content is not plain text.
     """
     turns: list[dict[str, str]] = []
 

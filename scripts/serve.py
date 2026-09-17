@@ -1,14 +1,8 @@
-"""The library in a browser: the same scope, the same answers, one page.
+"""Serve the library over HTTP.
 
-Nothing here decides anything the console decides differently. This reads the
-flags, says what it is about to serve the way the console says what it is about
-to search, and hands the application to uvicorn.
-
-    python -m scripts.serve
-
-It listens on 127.0.0.1, which is this machine only. `--host 0.0.0.0` opens it
-to the network, and there is no authentication behind it: the whole library and
-every conversation would be readable by anyone who can reach the port.
+The page is served from `web/`, the catalog is browsable, and the chat is
+streamed as the answer is written. The catalog and the conversations file can be
+pointed elsewhere on the command line.
 """
 
 from __future__ import annotations
@@ -24,11 +18,10 @@ from app.config import Settings, describe_vector_store, settings, short_path
 
 
 def config_for(args: argparse.Namespace) -> Settings:
-    """The settings these flags describe.
+    """The settings for this run, with the two paths from the command line.
 
-    Only the two paths are replaceable: the store and the models come from the
-    same `.env` the console and the sync read, so that the page and the console
-    are two views of one library rather than two libraries.
+    Everything else comes from the environment, so the server runs over the same
+    model, store and documents folder as the console does.
     """
     return replace(
         settings,
@@ -38,6 +31,7 @@ def config_for(args: argparse.Namespace) -> Settings:
 
 
 def parse_args() -> argparse.Namespace:
+    """The command line, with the address and the two paths."""
     parser = argparse.ArgumentParser(
         description=(
             "Serve the library over HTTP. The catalog is browsable and the chat "
@@ -72,12 +66,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Start the server."""
     args = parse_args()
     config = config_for(args)
 
-    # The same banner the console prints, with the address under it: a wrong
-    # answer is nearly always a question asked of the wrong store or the wrong
-    # catalog, and the two lines settle it.
+    # Printed before the server starts, so that a run can be read back with what
+    # it served.
     print("Repertorio Docs")
     print(f"store: {describe_vector_store(config)}")
     print(f"catalog: {short_path(config.catalog_db_path)}")

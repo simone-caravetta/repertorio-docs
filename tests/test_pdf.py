@@ -1,9 +1,9 @@
-"""Reading a document: where its structure comes from, and where its pieces sit.
+"""What the reader makes of a PDF.
 
-The offsets these tests are about are the ones the ingest writes into a chunk and
-the endpoint reads back to draw a rectangle, so most of what is asserted here is
-the one contract that has to hold between them: a piece is exactly the text of
-the page it says it covers.
+Reading a document gives pages of text and a list of pieces, each piece
+carrying the section it belongs to. The tests build documents whose layout
+they control, then check the text, the offsets into it and where each piece
+came from.
 """
 
 from __future__ import annotations
@@ -23,11 +23,13 @@ def by_page(pieces: list[pdf.Piece], number: int) -> list[pdf.Piece]:
 
 @pytest.fixture
 def indexed(tmp_path: Path) -> Path:
-    """A document that declares its own sections, and holds a table.
+    """A document with two pages, an outline and a table.
 
-    Its letters say one thing more than its index does — a line at 13pt that the
-    index never mentions — so a test can tell which of the two was read.
+    The outline names the sections and the pages carry the matching titles,
+    so the reader has both sources to work from. The second page holds a
+    table below a heading.
     """
+
     return make_structured_pdf(
         tmp_path / "manual.pdf",
         pages=[
@@ -55,7 +57,7 @@ def indexed(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def plain(tmp_path: Path) -> Path:
-    """The same shape of document, saying nothing about itself."""
+    """A document with no outline, where the type size gives the sections."""
     return make_structured_pdf(
         tmp_path / "notes.pdf",
         pages=[
@@ -66,7 +68,7 @@ def plain(tmp_path: Path) -> Path:
 
 
 def test_a_span_sits_where_it_says_it_does(indexed: Path) -> None:
-    """The pair of offsets and text agree, which is all the rest rests on."""
+    """Each span covers exactly the page text it points at."""
     for page in pdf.read_pages(indexed):
         for span in page.spans:
             assert page.text[span.start : span.end] == span.text
@@ -74,12 +76,12 @@ def test_a_span_sits_where_it_says_it_does(indexed: Path) -> None:
 
 
 def test_the_pieces_are_the_words_of_the_page(indexed: Path) -> None:
-    """Read in order they give back every word, each of them once.
+    """Read in order, the pieces spell the page out word for word.
 
-    Not the text character for character: a piece is trimmed of the space around
-    it, so the whitespace between two pieces belongs to neither. What must not
-    happen is a word in two pieces or in none.
+    The pieces of a page never overlap, and every word of the page turns up
+    in exactly one of them.
     """
+
     pages = pdf.read_pages(indexed)
     pieces = pdf.pieces(indexed)
 
@@ -89,15 +91,14 @@ def test_the_pieces_are_the_words_of_the_page(indexed: Path) -> None:
         for earlier, later in pairwise(on_page):
             assert earlier.end <= later.start
 
-        # The words, in order and once each. Not the characters: a piece is
-        # trimmed of the space around it, so the whitespace between two of them
-        # belongs to neither, and the comparison is of what is left.
+        # Put the pieces back together. The words must come out in the same
+        # order as they appear on the page.
         read = [word for piece in on_page for word in piece.text.split()]
         assert read == page.text.split()
 
 
 def test_a_piece_is_exactly_the_text_it_covers(indexed: Path) -> None:
-    """The contract the endpoint depends on: offsets index the page's own text."""
+    """A piece's text is the slice of the page it says it covers."""
     pages = pdf.read_pages(indexed)
 
     for piece in pdf.pieces(indexed):
@@ -105,17 +106,17 @@ def test_a_piece_is_exactly_the_text_it_covers(indexed: Path) -> None:
 
 
 def test_a_piece_begins_and_ends_on_a_word(indexed: Path) -> None:
-    """The blank lines between two pieces belong to neither of them.
+    """No piece carries a space at either end.
 
-    Left on, every chunk would open with the newlines that separated it from the
-    piece before, and a table would be read with the space around its grid.
+    A piece covers whole words, so stripping it leaves it as it was.
     """
+
     for piece in pdf.pieces(indexed):
         assert piece.text == piece.text.strip()
 
 
 def test_every_piece_has_something_to_draw_on(indexed: Path) -> None:
-    """Offsets that survive the round trip through a page number and back."""
+    """Every piece maps back to at least one box on its page."""
     pages = pdf.read_pages(indexed)
 
     for piece in pdf.pieces(indexed):
@@ -124,7 +125,7 @@ def test_every_piece_has_something_to_draw_on(indexed: Path) -> None:
 
 
 def test_the_index_gives_the_sections_and_their_levels(indexed: Path) -> None:
-    """Declared levels, taken as declared rather than re-derived from the sizes."""
+    """The outline supplies the section titles and how deep each one sits."""
     found = {
         (piece.section, piece.level)
         for piece in pdf.pieces(indexed)
@@ -137,17 +138,18 @@ def test_the_index_gives_the_sections_and_their_levels(indexed: Path) -> None:
 
 
 def test_a_document_with_an_index_is_not_also_read_by_its_letters(indexed: Path) -> None:
-    """The 13pt line the index never names is body, not a section of its own.
+    """When the document has an outline, only its titles open a section.
 
-    Which is the whole reason the two are never mixed: a document that says what
-    its sections are is not improved by guessing at others from the typography.
+    The page also carries the smaller line "1.1  Il filtro", which the size
+    rule on its own would take for a title.
     """
+
     sections = {piece.section for piece in pdf.pieces(indexed)}
     assert "1.1  Il filtro" not in sections
 
 
 def test_without_an_index_the_letters_give_the_sections(plain: Path) -> None:
-    """Sizes, ordered largest first, and nothing nested beyond that."""
+    """With no outline, the larger text on the page marks the sections."""
     headings = [
         (piece.section, piece.level)
         for piece in pdf.pieces(plain)
@@ -159,13 +161,12 @@ def test_without_an_index_the_letters_give_the_sections(plain: Path) -> None:
 
 
 def test_a_body_line_is_not_a_section(plain: Path) -> None:
-    """The size the document mostly writes in is what a section is measured against.
+    """Body text stays inside the section it sits under.
 
-    The measure is taken over the characters and not the lines: a page of headings
-    has more headings on it than a page of prose has paragraphs, and counting
-    lines would call the document's body the exception and everything else the
-    rule.
+    A line of ordinary size is running text, so it opens no section of its
+    own even when it is longer than the lines around it.
     """
+
     body = [piece for piece in pdf.pieces(plain) if piece.text.startswith(BODY)]
 
     assert body
@@ -173,14 +174,14 @@ def test_a_body_line_is_not_a_section(plain: Path) -> None:
 
 
 def test_a_section_carries_on_to_the_next_page(plain: Path) -> None:
-    """A page that opens mid-section is under the heading that opened it."""
+    """A section opened on one page still holds the pieces on the next."""
     continued = by_page(pdf.pieces(plain), 1)
     assert continued
     assert {piece.section for piece in continued} == {"Paragrafo"}
 
 
 def test_a_table_is_one_piece(indexed: Path) -> None:
-    """Whole, because a grid read in halves is read as prose."""
+    """A table comes back as one piece holding all of its cells."""
     tables = [piece for piece in pdf.pieces(indexed) if piece.kind == pdf.TABLE]
 
     assert len(tables) == 1
@@ -195,11 +196,12 @@ def test_a_table_is_one_piece(indexed: Path) -> None:
 
 
 def test_a_section_title_inside_a_table_does_not_cut_it(plain: Path, tmp_path: Path) -> None:
-    """A large line in a cell is part of the grid, not a heading over it.
+    """A large line drawn over a table does not split the table apart.
 
-    Trusting it would cut the table in two and file half of it under a title it
-    has nothing to do with.
+    The title rules work on text positions, and a title that overlaps the
+    rows of a grid must not break the table into two pieces.
     """
+
     path = make_structured_pdf(
         tmp_path / "grid.pdf",
         pages=[
@@ -216,11 +218,12 @@ def test_a_section_title_inside_a_table_does_not_cut_it(plain: Path, tmp_path: P
 
 
 def test_an_entry_that_names_nothing_on_its_page_is_dropped(tmp_path: Path) -> None:
-    """An index points at a page, and a page is not a position.
+    """An outline entry with no matching title anywhere is left out.
 
-    The entry naming a page it is not written on cannot be placed, so it is left
-    out rather than put at the top of the page it points at.
+    The entries that can be placed are kept and the section runs from
+    those.
     """
+
     path = make_structured_pdf(
         tmp_path / "wrong.pdf",
         pages=[[Line("Capitolo", size=15), Line(BODY)]],
@@ -233,16 +236,13 @@ def test_an_entry_that_names_nothing_on_its_page_is_dropped(tmp_path: Path) -> N
 
 
 def test_an_entry_that_names_the_wrong_page_is_still_found(tmp_path: Path) -> None:
-    """A printed index is often a page or two out, in either direction.
+    """An entry naming the wrong page still marks its section.
 
-    The page number says where to look first and nothing more; the title is what
-    is written on the page the section opens, and that is what is trusted. The
-    book this was written for is out by a page on three of its four chapters.
-
-    The title is set in the body size, so that reading the letters cannot stand in
-    for reading the index: a section found here was found by the index or not at
-    all.
+    The outline points one page away from where the title is written. The
+    page number only decides between several matches, so the section lands
+    on the page that really says the words.
     """
+
     path = make_structured_pdf(
         tmp_path / "offset.pdf",
         pages=[
@@ -259,11 +259,12 @@ def test_an_entry_that_names_the_wrong_page_is_still_found(tmp_path: Path) -> No
 
 
 def test_a_title_the_document_wraps_is_still_one_title(tmp_path: Path) -> None:
-    """The index joins a title the page needed two lines for, and `\\r` is that join.
+    """A title written over two lines is matched as a single name.
 
-    Neither half says the title, so neither is equal to it: what makes the entry
-    usable is that one of them is the beginning of it.
+    The outline joins the two lines, so the reader compares against the
+    joined text and marks the section on the line where it starts.
     """
+
     path = make_structured_pdf(
         tmp_path / "wrapped.pdf",
         pages=[
@@ -282,16 +283,13 @@ def test_a_title_the_document_wraps_is_still_one_title(tmp_path: Path) -> None:
 
 
 def test_a_listing_of_the_sections_does_not_answer_for_them(tmp_path: Path) -> None:
-    """The page that lists the sections writes their numbers and their dots too.
+    """A table of contents page does not count as the section itself.
 
-    A line carrying a title with a page number and a row of dots after it is not
-    a line carrying the title, and saying so exactly first is what keeps a
-    section from being put on the page that only announces it.
-
-    The listing is put nearer the page the index names than the section itself,
-    so that nothing but the exact pass can choose between them; and the section
-    is set in the body size, so that the letters cannot be read instead.
+    An entry in a listing ends with a page number and dots, so it never
+    equals a title. The reader passes over it and marks the real heading
+    further on.
     """
+
     path = make_structured_pdf(
         tmp_path / "listing.pdf",
         pages=[
@@ -308,13 +306,12 @@ def test_a_listing_of_the_sections_does_not_answer_for_them(tmp_path: Path) -> N
 
 
 def test_the_section_is_the_nearest_page_that_says_the_title(tmp_path: Path) -> None:
-    """A page writing a bare title is not always the page the section opens on.
+    """With the same title on several pages, the nearest one to the index wins.
 
-    An index whose entries keep their page numbers in a column of their own writes
-    each title and nothing else, exactly as a heading does, so both pages say the
-    title and both say it exactly. Which of them is the section is decided by the
-    page the index named, and the nearer of the two is the one it meant.
+    The outline names the third page. The words also sit on the first, and
+    the reader takes the match closest to the page the outline pointed at.
     """
+
     path = make_structured_pdf(
         tmp_path / "twice.pdf",
         pages=[
@@ -330,7 +327,7 @@ def test_the_section_is_the_nearest_page_that_says_the_title(tmp_path: Path) -> 
 
 
 def test_an_index_that_matches_nothing_leaves_the_letters_to_speak(tmp_path: Path) -> None:
-    """A document whose index cannot be used is read as one that has none."""
+    """An outline naming no title on the page falls back to the size rule."""
     path = make_structured_pdf(
         tmp_path / "nomatch.pdf",
         pages=[[Line("Capitolo", size=15), Line(BODY), Line("Paragrafo", size=13), Line(BODY)]],
@@ -342,7 +339,7 @@ def test_an_index_that_matches_nothing_leaves_the_letters_to_speak(tmp_path: Pat
 
 
 def test_a_page_with_no_text_has_nothing_to_read(tmp_path: Path) -> None:
-    """A scanned page has no words and so no pieces, rather than an empty one."""
+    """A page with no text gives no spans and no pieces."""
     path = make_pdf(tmp_path / "scanned.pdf", "")
 
     pages = pdf.read_pages(path)
@@ -352,18 +349,16 @@ def test_a_page_with_no_text_has_nothing_to_read(tmp_path: Path) -> None:
 
 
 def test_a_range_that_covers_nothing_has_no_boxes(indexed: Path) -> None:
-    """Half-open, so an empty range is empty and not the box of the character at it."""
+    """An empty range has nothing to draw on."""
     assert pdf.boxes(pdf.read_pages(indexed)[0], 4, 4) == []
 
 
 def test_a_page_read_on_its_own_is_the_page_of_the_document(indexed: Path) -> None:
-    """The offsets index one text, and the two readings of it have to be that one.
+    """Reading one page gives the same text as reading the whole file.
 
-    A document is read whole to be indexed and one page of it is read to be drawn
-    on: a chunk's offsets were written against the first, and a rectangle is
-    found with the second. A character of difference between them is a highlight
-    a word out, and nothing in either reading would say so.
+    A caller that needs a single page can ask for it by number.
     """
+
     pages = pdf.read_pages(indexed)
 
     for number in range(1, len(pages) + 1):
@@ -371,11 +366,12 @@ def test_a_page_read_on_its_own_is_the_page_of_the_document(indexed: Path) -> No
 
 
 def test_a_page_the_document_does_not_have_is_refused(indexed: Path) -> None:
-    """Counted from one, and read as a number rather than as an index.
+    """A page outside the document raises and names the number asked for.
 
-    Zero is the case worth naming: it is a valid index into a list of pages, so
-    read as one it answers about the last page of the document.
+    The first page is page 1, so 0 and anything past the last page are out
+    of range.
     """
+
     with pytest.raises(IndexError, match="No page 0"):
         pdf.read_page(indexed, 0)
 

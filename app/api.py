@@ -1,11 +1,11 @@
-"""The library over HTTP: the catalog, a scope, and a conversation.
+"""The HTTP app the page talks to.
 
-Nothing here decides anything the console decides differently. A scope is
-resolved by `app.scope`, the tree is built by `app.catalog`, and the answer comes
-out of the same graph. What the web adds is a place to wait: the sources are sent
-the moment retrieval has finished, and the tokens follow as the model writes
-them, so a page can show where an answer is coming from while it is still being
-written.
+The routes serve the catalog, run one question through the graph and stream the
+answer back as it is written, and hand over the boxes of a passage inside a PDF
+page.
+
+`create_app` takes the checkpointer, the chat model and the retriever builder as
+arguments, so that a test can build the app over its own pieces.
 """
 
 from __future__ import annotations
@@ -41,15 +41,20 @@ from app.rag_graph import (
 )
 from app.scope import Scope, build_scoped_retriever, document_path, resolve_scope
 
+# The folder holding the page and its assets.
 WEB_DIR = PROJECT_ROOT / "web"
 
-# The words the console prints when there is nothing to look at yet, so that the
-# two say the same thing about the same state.
+
+# Said to a request that arrives before anything has been indexed.
 NO_CATALOG = "No catalog here yet. Run a sync first."
 
 
 class ChatRequest(BaseModel):
-    """A question, the conversation to put it in, and what to ask it of."""
+    """One question, with the scope it is asked of.
+
+    The scope is a category, one document or a list of documents, and it is the
+    same one the page has selected.
+    """
 
     question: str
     thread_id: str | None = None
@@ -65,29 +70,27 @@ def create_app(
     retriever_for: Callable[[Scope], BaseRetriever] | None = None,
     config: Settings | None = None,
 ) -> FastAPI:
-    """The application, wired around the parts a caller can replace.
+    """Build the app, over the pieces it is given.
 
-    Every argument defaults to the real thing and the tests hand in fakes, which
-    is the same seam `build_graph` already has. `config` is read here rather than
-    as a default argument, so that a caller which replaces the settings gets the
-    ones it replaced.
+    Each argument has a default built from the settings. A test passes its own,
+    so that no model is called and no file of the user's is touched.
     """
     config = config or settings
     make_retriever = retriever_for or build_scoped_retriever
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        """Open the conversations for the life of the process, and close them.
+        """Open the conversations and build the graph the app answers with.
 
-        The model is built here too, once: without a key to reach it with, there
-        is nothing this server could answer, and saying so at startup beats
-        saying it at the first question.
+        Both are built once, at startup, and kept on the app. The routes read
+        them from there.
         """
         async with _conversations(checkpointer, Path(config.conversations_db_path)) as saver:
             app.state.checkpointer = saver
             app.state.model = chat_model or build_chat_model()
-            # A graph to read threads with. Reading a state runs no node, so this
-            # one never retrieves; it is the saver that holds the conversation.
+
+            # Kept for reading a thread back. It is built without a scope, and
+            # the chat route builds its own graph for every question.
             app.state.reader = build_graph(
                 chat_model=app.state.model, checkpointer=saver
             )
@@ -107,16 +110,16 @@ def create_app(
         if not db_path.exists():
             return {"empty": True, "categories": [], "uncategorized": []}
 
-        # Read-only, like the listing command: looking at the library must never
-        # bring a database into existence.
+        # Opened read-only. The page only ever reads the catalog, and a second
+        # connection that writes would lock the sync out.
         return catalog_view(Catalog(db_path, create=False))
 
     @app.get("/api/scope")
     async def scope_route(
         category: str | None = None,
         document: str | None = None,
-        # A scope can name several documents, so this is asked for more than
-        # once; `Annotated` says so without ruff objecting to the call.
+        # A parameter repeated in the query string arrives as a list, and
+        # Annotated is how the route declares that.
         documents: Annotated[list[str] | None, Query()] = None,
     ) -> dict[str, Any]:
         return describe_scope(
@@ -130,11 +133,11 @@ def create_app(
 
     @app.post("/api/chat")
     async def chat_route(body: ChatRequest, request: Request) -> StreamingResponse:
-        """One question, streamed back as it is answered.
+        """Answer one question and stream the answer back.
 
-        The scope is resolved before the response begins, so a category that
-        holds nothing is an error the page can read, not a stream that ends
-        without an answer.
+        The retriever is built here, scoped to the documents this request is
+        about. The checkpointer is the one from startup, so a thread id that has
+        been used before carries its conversation on.
         """
         scope = scope_of(
             config,
@@ -149,9 +152,8 @@ def create_app(
             chat_model=request.app.state.model,
             retriever=make_retriever(scope),
             checkpointer=saver,
-            # What the answer is told it searched, and what the catalog says
-            # about it. The scope knows both for every scope, the whole library
-            # included, and the passages say neither.
+            # What the answer is told about the library, which is the documents
+            # that were searched and what the catalog says about each of them.
             in_scope=scope.documents,
             descriptions=dict(scope.descriptions),
         )
@@ -159,9 +161,8 @@ def create_app(
         return StreamingResponse(
             answer_stream(graph, thread_config(thread_id), body.question),
             media_type="text/event-stream",
-            # No cache anywhere between here and the page, and no buffering on
-            # the way: both would hold the tokens until the answer was over,
-            # which is the one thing this stream exists not to do.
+            # No cache and no proxy buffering, or the events arrive in one go
+            # once the answer is already finished.
             headers={
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",
@@ -170,24 +171,12 @@ def create_app(
 
     @app.get("/api/documents/boxes")
     def boxes_route(source: str, page: int, start: int, end: int) -> dict[str, Any]:
-        """Where a passage sits on its page, as the rectangles to draw it with.
+        """The boxes of a passage, on the page it was found.
 
-        `page`, `start` and `end` are the passage's own metadata as the sources
-        rows carry it: the page a reader turns to, and the characters it covers
-        in that page's text — the text `app.pdf` builds, and the one the offsets
-        were written against when the document was indexed.
-
-        The catalog is not consulted, here or in the resolver: the documents
-        folder is what says whether a document is here, and a page answers the
-        same way for a file that has never been indexed.
-
-        A plain `def` on purpose. Reading a PDF is blocking work, and FastAPI
-        runs a handler written this way in its threadpool, where the same work
-        inside an `async def` would hold the event loop for as long as it took
-        and stall every other request with it.
+        The page is read again from the file and the character range the search
+        recorded is located in it. What comes back is the coordinates of every
+        line of that range, which the page draws over the image of the page.
         """
-        # The free checks first: a request naming a range that is not one is
-        # answered without opening a file, let alone reading one.
         if start < 0 or end <= start:
             raise HTTPException(
                 status_code=400, detail=f"Not a range: {start}-{end}"
@@ -198,10 +187,8 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        # One page, not the document: the reader refuses a number the document
-        # does not have, which is what keeps a zero from being read as the last
-        # page — a valid index, and an answer about the wrong page that looks
-        # like any other.
+        # The page is read from the file, so that the coordinates belong to the
+        # page the reader is looking at.
         try:
             read = pdf.read_page(path, page)
         except IndexError as exc:
@@ -224,11 +211,9 @@ def create_app(
         return {
             "thread_id": thread_id,
             "messages": turns_from(state),
-            # Only the last answer's query and sources: the state holds the
-            # passages of one turn, and the ones before it were shown when they
-            # were asked. The text of every turn is here, and the text is what a
-            # reload is for. The query is here for the same reason it is in the
-            # stream — a reloaded conversation should still say what was searched.
+            # The query the search ran, which is the question after it was
+            # rewritten to stand on its own. The sources are those of the last
+            # turn, with the repeats merged.
             "query": state.values.get("contextualized_question"),
             "sources": unique_sources(
                 state.values.get("retrieved_documents", [])
@@ -237,18 +222,11 @@ def create_app(
 
     @app.delete("/api/threads/{thread_id}")
     async def delete_thread_route(thread_id: str, request: Request) -> dict[str, str]:
-        """Remove a conversation and everything that was said in it.
+        """Forget a conversation and everything stored under its thread id.
 
-        A delete and not a forgetting: the checkpoints are gone from the file, so
-        there is nothing left to read back and nothing to carry on. A conversation
-        nobody has had is already gone, and saying so is not an error either — the
-        same reading `GET` takes of one.
-
-        The tables are opened first because `adelete_thread` is the one method of
-        the saver that does not open them itself. Reading and writing both do, which
-        is why a `GET` against a database nothing has ever been written to answers
-        and a `DELETE` against one would raise instead. `setup` does nothing once it
-        has been done, so this costs a lock and no more.
+        The store is set up first, because deleting reads and writes the same
+        tables the store creates when it starts. A thread that was never used
+        is not an error.
         """
         checkpointer = request.app.state.checkpointer
         await checkpointer.setup()
@@ -263,11 +241,11 @@ def create_app(
 async def _conversations(
     checkpointer: BaseCheckpointSaver | None, path: Path
 ) -> AsyncIterator[BaseCheckpointSaver]:
-    """The conversations, from wherever they are coming.
+    """The checkpointer the app keeps its conversations in.
 
-    One shape for both cases, because the lifespan has one: a server keeps them
-    in a file it opens here and closes at shutdown, and a test hands in one it
-    has already opened.
+    One that is passed in is used as it is, which is what a test does. With
+    none, the conversations file is opened and closed around the run of the
+    app.
     """
     if checkpointer is not None:
         yield checkpointer
@@ -285,11 +263,10 @@ def scope_of(
     document: str | None,
     documents: list[str] | None,
 ) -> Scope:
-    """The scope a request asked for, or a refusal the caller can read.
+    """The scope a request asked for.
 
-    The message is the resolver's own: it is the one the console prints, and it
-    names the document or the category that was not found. A missing API key is
-    deliberately not caught here — that is the server, not the request.
+    A category or a document that is not in the catalog comes back as a 400
+    carrying the reason, which the page shows as it is.
     """
     db_path = Path(config.catalog_db_path)
     if not db_path.exists():
@@ -308,12 +285,11 @@ def scope_of(
 
 
 def describe_scope(scope: Scope) -> dict[str, Any]:
-    """A scope as the page shows it: what it says, and what it will search.
+    """The scope as the page needs it.
 
-    `sources` is null for the whole library, which is not the same as a scope
-    holding no documents: the first searches everything, the second is refused
-    before it gets this far. Sending an empty list for both would say the whole
-    library is a search over nothing.
+    `sources` is None when the scope covers the whole library, which is how the
+    page tells "everything" from "these documents". `whole_document` says the
+    scope is one small document, which is handed over in full.
     """
     return {
         "label": scope.label,
@@ -327,19 +303,14 @@ async def answer_stream(
     config: dict[str, Any],
     question: str,
 ) -> AsyncIterator[str]:
-    """The answer as it is produced: the thread, the query, the sources, the tokens, the end.
+    """Answer one question and yield the events of the answer.
 
-    The query and the sources come out of the `updates` stream, which reports what
-    each node handed on: `contextualize` has finished by the time its update is
-    emitted, and `retrieve` by the time of its own, while the answer is still
-    being written — which is where the fifth of these in the roadmap asks for the
-    sources. The `messages` stream carries the tokens, filtered to the node that
-    writes the answer, the way the console filters them.
+    The events come in the order the page needs them. The thread id first, then
+    the rewritten query, then the sources, then the tokens of the answer as the
+    model writes them, and a last one carrying the answer whole.
 
-    An error can only be reported inside the stream, a response having already
-    begun: it ends the answer, and the page says what it was. A client that goes
-    away is not an error — the cancellation is a `BaseException` and passes
-    through, closing the generator.
+    A failure anywhere in the graph becomes an error event, so that the page has
+    something to show in place of an answer.
     """
     yield event("thread", {"thread_id": config["configurable"]["thread_id"]})
 
@@ -365,11 +336,9 @@ async def answer_stream(
             elif chunk["type"] == "updates":
                 finished = chunk["data"]
 
-                # The query the search was actually run on, sent before the
-                # passages it found. It is not always the question as it was
-                # typed: the graph rewrites it with the conversation in hand, and
-                # a rewrite can narrow the search without anyone asking it to.
-                # Anything that changes what a question means has to be visible.
+                # A node reports when it is done. The query and the sources go
+                # out while the answer is still being written, which is what
+                # lets the page show them above it.
                 if "contextualize" in finished:
                     query = finished["contextualize"].get("contextualized_question")
                     if query:
@@ -386,30 +355,21 @@ async def answer_stream(
         yield event("done", {"answer": "".join(written)})
 
     except Exception as exc:  # noqa: BLE001
-        # The model being unreachable, the store refusing: one answer is lost,
-        # the conversation is not.
+        # The response has already started, so a failure is one more event.
         yield event("error", {"message": str(exc)})
 
 
 def event(name: str, payload: dict[str, Any]) -> str:
-    """One server-sent event.
-
-    `data` is one line by construction: JSON escapes the newlines inside a string,
-    so a long answer still arrives as a single `data:` line.
-    """
+    """One server-sent event, whose name the page listens for."""
     return f"event: {name}\ndata: {json.dumps(payload)}\n\n"
 
 
 def catalog_view(catalog: Catalog) -> dict[str, Any]:
-    """The whole catalog as a page renders it.
+    """The catalog as the page needs it, which is a tree of categories.
 
-    Built from the rows themselves rather than from `category_counts`, which
-    counts only what is indexed: a document that failed to index has a status
-    worth showing, and a category shown without it would be a category whose
-    contents the page cannot explain.
-
-    Trashed documents are left out. The sync put them there because their file is
-    gone, and listing them would be listing documents no question can reach.
+    A document in the trash is left out. Every branch carries the documents
+    filed directly in it together with the branches below it, and the documents
+    filed in no category come back on their own.
     """
     records = [record for record in catalog.all() if record.status != "trashed"]
     direct: dict[str, list[dict[str, Any]]] = {}
@@ -431,12 +391,10 @@ def catalog_view(catalog: Catalog) -> dict[str, Any]:
 def as_branch(
     branch: CategoryBranch, direct: dict[str, list[dict[str, Any]]]
 ) -> dict[str, Any]:
-    """A branch, with the documents filed directly in it and its own children."""
+    """One branch of the tree, with the documents filed directly in it."""
     return {
         "name": branch.name,
-        # These two are not the same number: `documents` lists what is filed
-        # directly in the category, `total` also counts what is filed below it,
-        # which is what a question about the category would search.
+        # The count over the whole branch, which includes its descendants.
         "total": branch.total,
         "documents": direct.get(branch.name, []),
         "children": [as_branch(child, direct) for child in branch.children],
@@ -444,9 +402,7 @@ def as_branch(
 
 
 def as_document(record: DocumentRecord) -> dict[str, Any]:
-    """A row as the page shows it. `description` is what `scripts.describe` wrote,
-    and None until it has been run for this document: a row with nothing to say
-    says nothing, and the page draws no line for it."""
+    """One document as the page needs it."""
     return {
         "path": record.path,
         "title": record.title,

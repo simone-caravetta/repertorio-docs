@@ -1,3 +1,10 @@
+"""The catalog, a SQLite table that says what has been indexed.
+
+One row per document, holding the path, the title, the description, the category
+and the status, together with the numbers the sync compares to tell whether a
+file has changed since it was indexed.
+"""
+
 from __future__ import annotations
 
 import sqlite3
@@ -6,8 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from pathlib import Path, PurePosixPath
 
-# The state a document can be in. `needs_ocr` is not assigned yet: a PDF with no
-# text layer is currently recorded as `failed` with "No text extracted".
+# The statuses a document can be in. The schema refuses any other value.
 STATUSES = (
     "queued",
     "indexing",
@@ -17,8 +23,11 @@ STATUSES = (
     "trashed",
 )
 
+# The same list written out for the schema below.
 _STATUSES_SQL = ", ".join(f"'{status}'" for status in STATUSES)
 
+# The table as it is created on an empty catalog. Columns added since the first
+# version are applied afterwards by `_migrate`.
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS documents (
     id              INTEGER PRIMARY KEY,
@@ -42,10 +51,8 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
 """
 
-# The columns a catalog written by an earlier version of this file does not have.
-# `CREATE TABLE IF NOT EXISTS` leaves an existing table exactly as it found it, so
-# a library indexed before a column was added never learns about it; SQLite has no
-# `ADD COLUMN IF NOT EXISTS`, and the table has to be asked what it holds.
+# Columns added after the first version of the schema, with their types. A
+# catalog created before those columns existed gets them added on opening.
 _ADDED_COLUMNS = (
     ("indexer", "TEXT"),
     ("embedding_model", "TEXT"),
@@ -53,14 +60,7 @@ _ADDED_COLUMNS = (
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Give a catalog written before these columns existed the ones it lacks.
-
-    Additive and nothing else: no column is dropped or rewritten, and the rows
-    are left as they are, so a library indexed by an older version reads with
-    the new columns absent and is indexed again on the next run. Only reached on
-    a catalog this object was allowed to write — a read-only one is left exactly
-    as it was found.
-    """
+    """Add the columns an older catalog is missing."""
     known = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
 
     for name, kind in _ADDED_COLUMNS:
@@ -69,23 +69,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 def category_from_path(path: str) -> str | None:
-    """The folder a document sits in, as the category it is filed under.
+    """The category a document path falls in, which is the folder it sits in.
 
-    This is the only place the folder layout is read. A document is filed under
-    its folder at the moment its row is created, and the catalog owns the value
-    from then on: reading the folder again on every sync would undo every move
-    made by hand, and would make the filesystem and the catalog two authorities
-    for one fact.
+    A file at the root of the documents folder has no category.
     """
     parent = PurePosixPath(path).parent
     return None if parent == PurePosixPath(".") else str(parent)
 
 
 def normalise_category(name: str | None) -> str | None:
-    """The category as it is stored, from whatever was typed on a command line.
+    """A category name as it is stored, or None for no category.
 
-    None and the empty string both mean "no category", which is where a document
-    at the root of the documents folder sits.
+    Whitespace and slashes around the name are removed. An empty name and a
+    single dot both mean no category.
     """
     if name is None:
         return None
@@ -99,6 +95,8 @@ def normalise_category(name: str | None) -> str | None:
 
 @dataclass(frozen=True)
 class DocumentRecord:
+    """One row of the catalog."""
+
     id: int
     path: str
     title: str
@@ -117,11 +115,11 @@ class DocumentRecord:
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> DocumentRecord:
-        # A column the row does not carry reads as absent rather than raising.
-        # That is the truth about a catalog written before the column existed,
-        # and for a fingerprint it is also the useful answer: a document with
-        # none was not indexed the way the code in hand would index it, so the
-        # next run indexes it again.
+        """Build a record from a row, tolerating columns the row lacks.
+
+        A row from a catalog written by an older version has fewer columns, and
+        each missing one becomes None.
+        """
         known = row.keys()
         return cls(
             **{
@@ -133,7 +131,11 @@ class DocumentRecord:
 
 @dataclass(frozen=True)
 class CategoryBranch:
-    """One category, with the ones filed beneath it."""
+    """A category together with the categories below it.
+
+    `documents` counts the documents filed directly in this category and `total`
+    counts those plus everything filed below it.
+    """
 
     name: str
     documents: int
@@ -144,16 +146,11 @@ class CategoryBranch:
 def build_category_tree(
     counts: Iterable[tuple[str | None, int]],
 ) -> tuple[CategoryBranch, ...]:
-    """Nest the category counts into the tree their names already describe.
+    """Turn the counted categories into a tree.
 
-    A category is a folder path, so the tree is in the names themselves and
-    there is no second table to keep in step. A category holding no document of
-    its own still appears when something is filed below it, because dropping it
-    would lose the level that says where the documents sit. `total` counts a
-    category and everything under it, which is what a scope on it would search.
-
-    Documents with no category are not a branch: they sit at the root, and the
-    caller shows them apart from the tree.
+    A category such as "a/b/c" implies the branches "a" and "a/b", which are
+    created even when nothing is filed in them. Each branch reports how many
+    documents sit in it directly and how many it holds in all.
     """
     direct: dict[str, int] = {}
     for category, count in counts:
@@ -189,15 +186,10 @@ def build_category_tree(
 
 
 class Catalog:
-    """The catalog of the documents in the library.
+    """The table of documents that have been indexed.
 
-    `path` is the identity of a document: its path relative to the documents
-    folder, the same value the chunks carry as `source`. It is compared as an
-    exact string, so a rename that only changes the case, or the Unicode
-    normalization form, is seen as a second document.
-
-    With `create=False` the database is only read: nothing is created, and any
-    write raises. Used by `sync --dry-run`.
+    With `create` false the catalog is opened read-only, and any attempt to
+    write to it raises.
     """
 
     def __init__(self, db_path: Path | str, *, create: bool = True) -> None:
@@ -212,7 +204,7 @@ class Catalog:
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        """A short-lived connection: SQLite handles are cheap, stale ones are not."""
+        """A connection to the database, committed on the way out."""
         conn = sqlite3.connect(self.db_path)
         try:
             conn.row_factory = sqlite3.Row
@@ -225,8 +217,7 @@ class Catalog:
     def _read(
         self, sql: str, params: tuple[object, ...] = ()
     ) -> list[sqlite3.Row]:
-        # A catalog that was never written has no rows yet. Reading it must not
-        # bring the database into existence.
+        """Rows from a read query, or none when the file does not exist yet."""
         if not self.db_path.exists():
             return []
 
@@ -236,34 +227,34 @@ class Catalog:
     def _write(
         self, sql: str, params: tuple[object, ...], path: str
     ) -> None:
+        """Run a write query and fail when it matched no row."""
         if not self.create:
             raise RuntimeError("The catalog was opened read-only")
 
         with self._connect() as conn:
             cursor = conn.execute(sql, params)
 
-        # Statements that change nothing mean the row is not there: the caller
-        # is working from a stale view of the catalog.
+        # Every write here addresses one document by its path. A query that
+        # matched nothing means the catalog does not know that document.
         if not cursor.rowcount:
             raise KeyError(f"No such document: {path}")
 
     def get(self, path: str) -> DocumentRecord | None:
+        """The record for one document, or None when it is not in the catalog."""
         rows = self._read("SELECT * FROM documents WHERE path = ?", (path,))
         return DocumentRecord.from_row(rows[0]) if rows else None
 
     def all(self) -> list[DocumentRecord]:
+        """Every record, ordered by path."""
         rows = self._read("SELECT * FROM documents ORDER BY path")
         return [DocumentRecord.from_row(row) for row in rows]
 
     def add_file(
         self, path: str, title: str, category: str | None = None
     ) -> None:
-        """Record a new document as `queued`. Raises ValueError if already there.
+        """Add a document to the catalog with the status of queued.
 
-        `category` is written here and nowhere else. This is the row's creation,
-        so it is the one moment the folder is allowed to say where the document
-        is filed; every later write leaves the column alone. See
-        `category_from_path`.
+        Raises ValueError when the path is already in the catalog.
         """
         try:
             self._write(
@@ -275,11 +266,10 @@ class Catalog:
             raise ValueError(f"Already in the catalog: {path}") from exc
 
     def set_category(self, path: str, category: str | None) -> None:
-        """File a document under a category, or at the root with None.
+        """File a document under a category, or under none.
 
-        A catalog write and nothing else: the vectors are not touched, and the
-        folder the file sits in does not have to move, which is what keeps a
-        reorganisation from costing a re-index.
+        This writes to the catalog alone and the file itself does not have to
+        move.
         """
         self._write(
             """
@@ -292,13 +282,7 @@ class Catalog:
         )
 
     def set_description(self, path: str, description: str) -> None:
-        """Write what the document is about, as one line.
-
-        A catalog write and nothing else: no vectors, no model, no file. The
-        description is a fact about the document, kept here because the console,
-        the page and the context the answer is written from all read the catalog
-        and none of them can work it out on its own.
-        """
+        """Store the description written for a document."""
         self._write(
             """
             UPDATE documents
@@ -310,17 +294,10 @@ class Catalog:
         )
 
     def clear_description(self, path: str) -> None:
-        """Take back what was written about the document.
+        """Forget the description of a document.
 
-        A description is written from the text of one edition of a file, so the
-        sync drops it when the file it describes turns out to be a different
-        edition: what the description says is no longer about the document, and
-        a row with nothing written about it is one the run writes again.
-
-        Dropped here rather than replaced on the spot, because the call that
-        writes the new one can fail. A description of the previous edition left
-        under the title of this one is answered from as though it were about the
-        document in hand, and it reads like any other.
+        The sync calls this when the file the description was written from has
+        changed, so that a new one is written on the next run.
         """
         self._write(
             """
@@ -335,12 +312,11 @@ class Catalog:
     def sources_in_category(
         self, category: str | None, *, include_descendants: bool = True
     ) -> list[str]:
-        """The indexed documents filed under a category, ordered by path.
+        """The indexed documents in a category.
 
-        Only `indexed` rows: a trashed or failed document has no vectors, so a
-        scope naming it would search less than it says it does. `None` means the
-        documents at the root, which are not a category above the others and so
-        do not take descendants with them.
+        With `include_descendants` the categories below it are included too, so
+        that a question asked of a category covers everything filed under it. A
+        category of None means the documents filed in no category.
         """
         rows = self._read(
             "SELECT path, category FROM documents "
@@ -350,9 +326,8 @@ class Catalog:
         if category is None:
             return [row["path"] for row in rows if row["category"] is None]
 
-        # Compared in Python rather than with a LIKE: a folder named `a_b` would
-        # match `axb` through the wildcard, and a scope is not a place to be
-        # approximately right.
+        # A category is also a prefix, which is what makes "manuali/vecchi" a
+        # descendant of "manuali".
         prefix = f"{category}/"
         return [
             row["path"]
@@ -365,7 +340,7 @@ class Catalog:
         ]
 
     def category_counts(self) -> list[tuple[str | None, int]]:
-        """How many indexed documents each category holds, `None` for the root."""
+        """How many indexed documents each category holds."""
         rows = self._read(
             "SELECT category, COUNT(*) AS n FROM documents "
             "WHERE status = 'indexed' GROUP BY category ORDER BY category"
@@ -373,6 +348,7 @@ class Catalog:
         return [(row["category"], int(row["n"])) for row in rows]
 
     def set_status(self, path: str, status: str) -> None:
+        """Set the status of a document."""
         self._write(
             """
             UPDATE documents
@@ -393,17 +369,10 @@ class Catalog:
         indexer: str | None = None,
         embedding_model: str | None = None,
     ) -> None:
-        """Record a document as indexed, and what built the index.
+        """Mark a document as indexed and store what indexing produced.
 
-        `indexer` and `embedding_model` are the fingerprint of the run that wrote
-        the vectors: the reader and the cut, and the model that turned the text
-        into numbers. Together they are what the next sync compares against the
-        code it is running, because neither the file nor the vectors themselves
-        say what produced them.
-
-        They are absent by default, which is the honest record for a caller that
-        has no run behind it, and which the next sync reads as a document to
-        index again.
+        The error message and the date it was trashed are cleared, so a document
+        that is indexed again starts from a clean row.
         """
         self._write(
             """
@@ -419,6 +388,7 @@ class Catalog:
         )
 
     def record_failed(self, path: str, error: str) -> None:
+        """Mark a document as failed and keep the message that says why."""
         self._write(
             """
             UPDATE documents
@@ -431,7 +401,11 @@ class Catalog:
         )
 
     def trash(self, path: str) -> None:
-        """Mark a document as trashed, keeping its metadata."""
+        """Move a document to the trash and record when.
+
+        The row stays in the catalog, so the document comes back by putting the
+        file where it was and running the sync again.
+        """
         self._write(
             """
             UPDATE documents
@@ -444,10 +418,5 @@ class Catalog:
         )
 
     def delete(self, path: str) -> None:
-        """Remove the row, metadata included.
-
-        The row is what a trashed document keeps to come back with: its title,
-        its counts and its history. Once the row is gone there is nothing left
-        to restore, and the document starts over as a new one.
-        """
+        """Remove a document from the catalog for good."""
         self._write("DELETE FROM documents WHERE path = ?", (path,), path)

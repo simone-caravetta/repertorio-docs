@@ -10,7 +10,11 @@ from tests.helpers import SENTENCE, FakeVectorStore, make_pdf
 
 @pytest.fixture
 def documents_dir(tmp_path: Path) -> Path:
-    """A documents folder holding two PDFs in two subfolders."""
+    """Two documents in two folders, written under a folder of their own.
+
+    Each one repeats the same sentence enough times to be split into more
+    than one chunk.
+    """
     root = tmp_path / "documents"
     make_pdf(root / "manuals" / "manual.pdf", SENTENCE * 20)
     make_pdf(root / "reports" / "report.pdf", SENTENCE * 20)

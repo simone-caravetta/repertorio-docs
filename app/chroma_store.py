@@ -1,9 +1,8 @@
-"""The local vector store: Chroma, in this process, in a folder on this machine.
+"""The Chroma store, which keeps the vectors in a folder on this machine.
 
-Kept apart from `app.vectorstore` rather than folded into it for one reason:
-`app.vectorstore` is imported by `app.rag_graph` on the hosted path, and it
-should not drag Chroma's dependency tree along with it. Here, the import cost
-and the coupling are both paid only when a local store is actually opened.
+Chroma is the alternative to Pinecone and is selected with VECTOR_STORE=chroma.
+The collection records how wide the vectors in it are, so a collection built by
+another embedding model is noticed when it is opened.
 """
 
 from __future__ import annotations
@@ -15,18 +14,16 @@ from langchain_core.embeddings import Embeddings
 
 from app.config import Settings
 
-# Where the collection records how long its vectors are. Unlike an index, a
-# collection has nowhere else to declare a dimension.
+# The key the width of the vectors is stored under in the collection metadata.
 DIMENSION_KEY = "dimension"
 
 
 def as_where(criteria: Any) -> dict:
-    """Turn the one filter this project deletes by into a Chroma `where`.
+    """A LangChain filter as the `where` clause Chroma expects.
 
-    Deliberately narrow. A Pinecone filter can also carry `$and`, `$in` and
-    `$ne`, which do not map onto Chroma's `where` one for one: translating them
-    by guesswork would delete rows nobody asked to delete, so anything but the
-    exact shape used here is refused instead.
+    Only a filter on the source is translated, which is the one this project
+    deletes by. Any other filter raises, so that a new one is added here instead
+    of being passed on unchecked.
     """
     source = criteria.get("source") if isinstance(criteria, dict) else None
     if isinstance(source, str) and len(criteria) == 1:
@@ -38,15 +35,15 @@ def as_where(criteria: Any) -> dict:
 
 
 class ChromaStore(Chroma):
-    """Chroma, with the metadata-filter delete the document lifecycle expects.
+    """Chroma with the delete filter translated.
 
-    The lifecycle deletes a document's vectors with `delete(filter={"source":
-    ...})`, which the hosted store answers natively. Chroma spells the same thing
-    `where`, and forwards it to its collection, so only that keyword is
-    translated and everything else reaches Chroma untouched.
+    LangChain takes `filter` on delete and Chroma itself takes `where`. This
+    translates between the two, so a caller can delete by source without knowing
+    which store it is on.
     """
 
     def delete(self, ids: list[str] | None = None, **kwargs: Any) -> None:
+        """Delete by ids, or by a filter that is translated to `where`."""
         criteria = kwargs.pop("filter", None)
         if criteria is not None:
             kwargs["where"] = as_where(criteria)
@@ -54,11 +51,11 @@ class ChromaStore(Chroma):
 
 
 def stored_dimension(store: Chroma) -> int | None:
-    """How long the stored vectors are, or None while the collection is empty.
+    """How wide the vectors in this collection are, or None when it is empty.
 
-    Read from the collection metadata when this code created it. A collection
-    made elsewhere does not carry it, and then the only thing that says how long
-    its vectors are is a vector.
+    The width is read from the collection metadata when it is recorded there. A
+    collection from an older version has none, and then one vector is read back
+    and measured.
     """
     declared = (store._collection.metadata or {}).get(DIMENSION_KEY)
     if isinstance(declared, int):
@@ -73,31 +70,28 @@ def stored_dimension(store: Chroma) -> int | None:
 def open_chroma_store(
     *, config: Settings, embedding: Embeddings, dimension: int
 ) -> ChromaStore:
-    """Open the local collection, creating it and its folder on first use.
+    """Open the collection, creating it the first time.
 
-    Takes what it needs as arguments instead of reading `settings` itself, so
-    that this module and `app.vectorstore` do not import each other.
+    The width of the current embedding model is written into the collection
+    metadata. A collection holding vectors of another width raises, because the
+    index of one model cannot be searched with the vectors of another.
     """
     import chromadb
     from chromadb.config import Settings as ChromaSettings
 
     client = chromadb.PersistentClient(
         path=str(config.chroma_dir),
-        # Chroma sends anonymous telemetry unless it is told not to, which is not
-        # something a local store promising to keep the documents here should do.
+        # Nothing about this machine or these documents leaves it.
         settings=ChromaSettings(anonymized_telemetry=False),
     )
 
-    # Constructing the store is what creates the collection and the folder:
-    # unlike the hosted path there is no separate ensure step, so the dimension
-    # check in the caller can only refuse after both already exist.
+    # The distance is fixed when the collection is created, so it is set here
+    # once and has to be the one the vectors were indexed with.
     store = ChromaStore(
         client=client,
         collection_name=config.chroma_collection,
         embedding_function=embedding,
         collection_metadata={
-            # Chroma defaults to L2. The embeddings are normalized and the hosted
-            # index is already on cosine, so the two stores have to agree.
             "hnsw:space": "cosine",
             DIMENSION_KEY: dimension,
         },
@@ -105,10 +99,8 @@ def open_chroma_store(
 
     found = stored_dimension(store)
     if found is not None and found != dimension:
-        # Refused here rather than left to Chroma: without this the mismatch
-        # surfaces as `add_documents` failing inside the per-document ingest, so
-        # a wrong model reads as "every document failed" instead of one clear
-        # refusal before anything is written.
+        # An old collection without the key in its metadata still reports the
+        # width of the vectors it holds, and that is what is compared here.
         name = config.chroma_collection
         raise RuntimeError(
             f"The collection {name!r} holds {found}-dimensional vectors, but the "

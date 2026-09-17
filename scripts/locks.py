@@ -1,8 +1,7 @@
-"""One run at a time on a catalog.
+"""One run at a time on the same catalog.
 
-The lock belongs to the catalog rather than to a command: sync and delete touch
-the same rows and the same index, so they have to exclude each other, not only
-themselves.
+The lock belongs to the catalog and not to a command. Sync and delete write the
+same rows and the same index, so they have to exclude each other.
 """
 
 from __future__ import annotations
@@ -13,15 +12,16 @@ from pathlib import Path
 
 try:
     import fcntl
-except ImportError:  # Not POSIX: no lock is available, two runs would overlap.
+except ImportError:  # Not POSIX, so no lock is available.
     fcntl = None  # type: ignore[assignment]
 
 
 @contextmanager
 def single_run(db_path: Path, *, enabled: bool = True) -> Iterator[None]:
-    """Refuse to start while another run is already working on this catalog.
+    """Refuse to start while another run is already using this catalog.
 
-    A dry run reads only, so it neither takes the lock nor creates the lock file.
+    A dry run only reads, so it does not take the lock and does not create the
+    lock file.
     """
     if fcntl is None or not enabled:
         yield

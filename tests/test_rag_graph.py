@@ -1,8 +1,9 @@
-"""The graph, run end to end against a fake model and a fake retriever.
+"""The question and answer graph.
 
-Nothing here reaches an API: the model replies from a list, the retriever hands
-back the documents it was given. Both record what they were asked, which is how
-the tests see the query the model rewrote and the context it was given.
+One turn runs through three nodes: the question is rewritten, the search is
+run with the rewritten one and the answer is written from what it found.
+The tests use a fake model and a fake retriever, so each part can be
+checked on its own.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ def make_document(page: int | None = 11) -> Document:
     metadata: dict[str, Any] = {"source": "manuals/manual.pdf"}
     if page is not None:
         metadata["page"] = page
-    # The offsets a chunk carries, which are what a citation is drawn with.
+
     metadata["start"] = 120
     metadata["end"] = 148
     return Document(page_content="The thing is explained here.", metadata=metadata)
@@ -66,8 +67,8 @@ def test_the_context_carries_the_source_and_a_one_based_page():
     assert context == (
         "[Source: manuals/manual.pdf | Page: 12]\nThe thing is explained here."
     )
-    # The page as a reader counts it, the offsets as the reader wrote them: the
-    # one number that is turned round on the way out, and the one that is not.
+
+    # Pages are stored counted from zero and shown counted from one.
     assert rows == [
         {"source": "manuals/manual.pdf", "page": 12, "ranges": [[120, 148]]}
     ]
@@ -77,20 +78,19 @@ def test_a_chunk_without_a_page_or_a_source_still_renders():
     context, rows = format_context([Document(page_content="text", metadata={})])
 
     assert context == "[Source: unknown]\ntext"
-    # Nothing to place a passage with, rather than a range at zero: a box drawn
-    # from an offset nobody wrote would be the first line of the page.
+
+    # A chunk with no metadata is given a name and nothing else.
     assert rows == [{"source": "unknown", "page": None, "ranges": []}]
 
 
 def test_a_chunk_the_store_hands_back_is_the_same_row():
-    """The numbers come back as floats and mean what they said.
+    """A chunk as a store returns it still makes the same row.
 
-    This is every chunk of the real library: the hosted store answers in JSON,
-    where a number has no whole form. Read as a chunk whose page is not a page,
-    the row counts the page from zero and reports no range at all — a citation
-    pointing one page short and nothing to draw on it, neither of them looking
-    wrong enough to be noticed.
+    A store that keeps its metadata outside the process returns whole
+    numbers as floats. The page and the offsets are read back into the
+    types the context uses.
     """
+
     context, rows = format_context([as_a_store_returns(make_document())])
 
     assert context == (
@@ -102,9 +102,12 @@ def test_a_chunk_the_store_hands_back_is_the_same_row():
 
 
 def test_a_range_that_starts_before_the_page_has_none():
-    """A range the endpoint would refuse is not one to send: these rows promise
-    the client can ask for them, and a negative offset is not somewhere to point.
+    """A range that starts before the text is not kept.
+
+    An offset of -3 points outside the page, so the row carries no range
+    at all.
     """
+
     document = Document(
         page_content="text",
         metadata={"source": "a.pdf", "page": 0, "start": -3, "end": 10},
@@ -116,7 +119,12 @@ def test_a_range_that_starts_before_the_page_has_none():
 
 
 def test_a_chunk_whose_offsets_are_not_a_range_has_none():
-    """An end that does not come after its start is not somewhere to point."""
+    """Offsets that describe no text are dropped.
+
+    The start and the end are the same number here, so the row carries no
+    range.
+    """
+
     document = Document(
         page_content="text",
         metadata={"source": "a.pdf", "page": 0, "start": 40, "end": 40},
@@ -128,12 +136,12 @@ def test_a_chunk_whose_offsets_are_not_a_range_has_none():
 
 
 def test_two_passages_of_one_page_are_one_row_with_both_their_ranges():
-    """What the de-duplication drops is not lost with it.
+    """Two passages of one page make one row holding both their ranges.
 
-    One page cited for four passages is one source, which is right; one place to
-    point at on it is not, and the rows it was merged from are where the others
-    are kept.
+    The pages are counted from one here, so chunks stored on pages 11 and
+    12 come back as pages 12 and 13.
     """
+
     _, rows = format_context([
         Document(
             page_content="The thing is explained here.",
@@ -156,12 +164,12 @@ def test_two_passages_of_one_page_are_one_row_with_both_their_ranges():
 
 
 def test_the_same_rows_read_twice_give_the_same_answer():
-    """The rows are the graph's state, which outlives the call that read them.
+    """Merging the same rows twice gives the same result.
 
-    Reading a conversation twice is two `GET /api/threads/{id}` over the same
-    rows, and a merge done where they lie would answer the second one with every
-    range on the row twice over.
+    The merge builds new rows, so the ones passed in are left as they were
+    and a second call over them produces the same list.
     """
+
     rows = [
         {"source": "manuals/manual.pdf", "page": 12, "ranges": [[0, 28]]},
         {"source": "manuals/manual.pdf", "page": 12, "ranges": [[900, 925]]},
@@ -181,15 +189,15 @@ def test_the_context_opens_with_the_documents_the_search_was_run_over():
         "Documents searched: 2 — manuals/manual.pdf, reports/report.pdf\n\n"
         "[Source: manuals/manual.pdf | Page: 12]\nThe thing is explained here."
     )
-    # The line is what was searched, not where a passage came from: the sources
-    # to cite are still the passages, and nothing else.
+
+    # The list of documents comes first and the passages follow it.
     assert rows == [
         {"source": "manuals/manual.pdf", "page": 12, "ranges": [[120, 148]]}
     ]
 
 
 def test_a_context_that_was_not_told_a_scope_claims_none():
-    """A graph built without one searches the same and says less about it."""
+    """A context with no list of documents starts at the first passage."""
     context, _ = format_context([make_document()], in_scope=())
 
     assert context.startswith("[Source: manuals/manual.pdf")
@@ -228,13 +236,12 @@ async def test_the_answer_prompt_carries_the_retrieved_context():
 
 @pytest.mark.asyncio
 async def test_the_answer_is_written_knowing_which_documents_were_searched():
-    """"Which documents do you have?" cannot be answered from the passages.
+    """The answer prompt carries the documents the search was run over.
 
-    It matches none of them, so a search over the library returns the chunks
-    closest to the question and nothing about the library; a model with only
-    those in front of it names the one they came from. The scope's list is what
-    it is answered from instead, and the prompt is told the list is there.
+    It also says what that list is for, so a question about the library
+    itself can be answered from it.
     """
+
     graph, model, _ = make_graph(
         ["a standalone question", "the answer"],
         in_scope=("manuals/manual.pdf", "reports/report.pdf"),
@@ -251,7 +258,8 @@ async def test_the_answer_is_written_knowing_which_documents_were_searched():
 
 
 def test_the_context_carries_what_the_catalog_says_about_a_document():
-    """A passage is a sample; the description is not, and it is there either way."""
+    """A description is written under the document it belongs to."""
+
     context, _ = format_context(
         [make_document()],
         in_scope=("manuals/manual.pdf", "reports/report.pdf"),
@@ -265,7 +273,8 @@ def test_the_context_carries_what_the_catalog_says_about_a_document():
 
 
 def test_a_document_nothing_is_written_about_is_named_and_no_more():
-    """The list is the scope, so it cannot depend on a description being there."""
+    """A document with no description is named in the list and no more."""
+
     context, _ = format_context(
         [make_document()],
         in_scope=("manuals/manual.pdf",),
@@ -277,12 +286,12 @@ def test_a_document_nothing_is_written_about_is_named_and_no_more():
 
 @pytest.mark.asyncio
 async def test_the_answer_is_written_knowing_what_the_documents_contain():
-    """The question the passages cannot answer when they come from one document.
+    """The prompt carries what the catalog says about each document.
 
-    Asked what each document contains, a search returns passages of the ones that
-    match — so a document the search did not return is one the answer has nothing
-    to say about. Its description is what it has to say instead.
+    It also says what that text is for, so a question about what a document
+    contains can be answered from it.
     """
+
     graph, model, _ = make_graph(
         ["a standalone question", "the answer"],
         in_scope=("manuals/manual.pdf", "reports/report.pdf"),
@@ -343,12 +352,13 @@ async def test_the_last_message_must_be_a_question():
 
 @pytest.mark.asyncio
 async def test_a_scoped_retriever_is_all_a_scoped_answer_takes():
-    """How the console asks about one document: a different retriever, same graph.
+    """An answer about one document needs only a retriever scoped to it.
 
-    `WholeDocumentRetriever` is a `BaseRetriever` rather than a `VectorStore` one,
-    which is the point — the graph asks any retriever for documents and does not
-    care which kind it is holding.
+    The retriever here reads one document whole. The graph is built with it
+    and the answer carries the chunks of that document, and nothing from
+    the other one in the store.
     """
+
     store = FakeVectorStore()
     store.added.append((
         [

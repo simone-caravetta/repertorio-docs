@@ -1,9 +1,8 @@
-"""The sync command's own surface: what it is asked for, and what it says.
+"""The sync command as a program on the command line.
 
-What a run does to a library is tested in `tests/test_sync.py`, and the warning
-it can end with in `tests/test_sync_warning.py`. Here it is the two things that
-belong to the command rather than to the work: the arguments it accepts, and the
-lines it prints about a run that has already happened.
+The tests cover the flags the script accepts, what it passes on to the run
+and the report it prints at the end. The documents and the catalog come
+from the fixtures, and the vector store is a fake.
 """
 
 from __future__ import annotations
@@ -26,7 +25,11 @@ REPORT = "reports/report.pdf"
 
 @pytest.fixture
 def argv(monkeypatch: pytest.MonkeyPatch) -> Callable[..., argparse.Namespace]:
-    """`parse_args`, over the arguments a shell would have handed it."""
+    """A parser for a command line written out in the test.
+
+    The arguments given are placed after the program name, and the parsed
+    namespace comes back.
+    """
 
     def parse(*given: str) -> argparse.Namespace:
         monkeypatch.setattr(sys, "argv", ["scripts.sync", *given])
@@ -37,12 +40,13 @@ def argv(monkeypatch: pytest.MonkeyPatch) -> Callable[..., argparse.Namespace]:
 
 @pytest.fixture
 def command_store(monkeypatch: pytest.MonkeyPatch) -> FakeVectorStore:
-    """The store the command opens for itself.
+    """Put a fake vector store in place for the whole run.
 
-    A run through `sync` reaches the vector store the way a shell does — by
-    building it — so the only way to run one without Pinecone is to answer that
-    build with a fake.
+    The script looks the store up inside app.vectorstore, so that is where
+    the fake is installed. It comes back so a test can read what was
+    written to it.
     """
+
     fake = FakeVectorStore()
     monkeypatch.setattr("app.vectorstore.get_vectorstore", lambda: fake)
     return fake
@@ -58,7 +62,7 @@ def test_descriptions_are_written_unless_the_run_is_told_not_to(
 def test_every_argument_reaches_the_run(
     argv: Callable[..., argparse.Namespace], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A flag that is parsed and then dropped is a flag that does nothing."""
+    """The parsed flags are handed to the run as keyword arguments."""
     argv("--dry-run", "--no-descriptions")
     given: dict[str, object] = {}
     monkeypatch.setattr("scripts.sync.sync", lambda **kwargs: given.update(kwargs))
@@ -72,7 +76,7 @@ def test_every_argument_reaches_the_run(
 def test_the_flag_does_not_touch_anything_else(
     argv: Callable[..., argparse.Namespace], tmp_path: Path
 ) -> None:
-    """A run told not to describe still watches the folder it was pointed at."""
+    """The flag leaves every other option as it was."""
     given = argv("--no-descriptions", "--documents-dir", str(tmp_path))
 
     assert given.documents_dir == tmp_path
@@ -102,12 +106,13 @@ def test_the_report_says_what_was_described_and_what_could_not_be(
 def test_a_report_reads_as_a_failure_of_the_description_not_of_the_document(
     capsys: pytest.CaptureFixture,
 ) -> None:
-    """The two are one word apart on screen and mean different things.
+    """A description that could not be written is not an ingest failure.
 
-    A document in `failed` did not get indexed and has no vectors; a description
-    that failed leaves a document that is indexed and searchable. Printed the
-    same way, the second reads as the first.
+    The document is indexed and stays that way. Its line in the report says
+    the description failed, and the line for a failed document is never
+    printed.
     """
+
     print_report(SyncReport(added=[MANUAL], description_failed=[(MANUAL, "no key")]))
 
     printed = capsys.readouterr().out
@@ -122,7 +127,7 @@ def test_the_command_describes_the_documents_it_indexes(
     command_store: FakeVectorStore,
     capsys: pytest.CaptureFixture,
 ) -> None:
-    """The flag and the run are two places, and this is the wire between them."""
+    """Every document the run indexes is described as it is written."""
     model = FakeChatModel(replies=["A manual about the thing.", "Last year's report."])
 
     report = sync(documents_dir=documents_dir, db_path=db_path, chat_model=model)

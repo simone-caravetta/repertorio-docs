@@ -10,7 +10,11 @@ from tests.helpers import make_pdf, make_settings
 
 
 def indexed(catalog: Catalog, path: str, *, chunks: int = 2) -> None:
-    """A document in the catalog, indexed, filed under the folder it sits in."""
+    """Put a document in the catalog and mark it as indexed.
+
+    The chunk count is a keyword argument, two unless another number is
+    given.
+    """
     catalog.add_file(path, Path(path).stem, category=category_from_path(path))
     catalog.record_indexed(
         path, file_hash="x", page_count=1, chunk_count=chunks
@@ -18,7 +22,7 @@ def indexed(catalog: Catalog, path: str, *, chunks: int = 2) -> None:
 
 
 def described(catalog: Catalog, path: str, text: str) -> None:
-    """A document with something written about it, as `scripts.describe` leaves it."""
+    """Write a description on a document the catalog already holds."""
     catalog.set_description(path, text)
 
 
@@ -41,7 +45,7 @@ def test_whole_library_is_the_scope_a_console_starts_on() -> None:
 
 
 def test_the_whole_library_names_the_documents_it_covers(catalog: Catalog) -> None:
-    """No filter is what the search gets; the documents are still known."""
+    """The whole library lists the documents a search can reach."""
     indexed(catalog, "manuals/a.pdf")
     indexed(catalog, "reports/c.pdf")
 
@@ -54,7 +58,7 @@ def test_the_whole_library_names_the_documents_it_covers(catalog: Catalog) -> No
 def test_the_whole_library_leaves_out_what_a_search_cannot_reach(
     catalog: Catalog,
 ) -> None:
-    """A document with no vectors is not one of the documents there are."""
+    """Failed and trashed documents are left out of the whole library."""
     indexed(catalog, "manuals/a.pdf")
     catalog.add_file("manuals/b.pdf", "b", category="manuals")
     catalog.record_failed("manuals/b.pdf", "No text extracted")
@@ -69,7 +73,7 @@ def test_the_whole_library_leaves_out_what_a_search_cannot_reach(
 def test_a_scope_carries_what_the_catalog_says_about_its_documents(
     catalog: Catalog,
 ) -> None:
-    """The answer is told what the documents contain, and not only which they are."""
+    """The descriptions are paired with their documents, in the same order."""
     indexed(catalog, "manuals/a.pdf")
     indexed(catalog, "reports/c.pdf")
     described(catalog, "manuals/a.pdf", "A manual about the thing.")
@@ -86,7 +90,10 @@ def test_a_scope_carries_what_the_catalog_says_about_its_documents(
 def test_a_document_with_nothing_written_about_it_is_still_named(
     catalog: Catalog,
 ) -> None:
-    """The list of documents is the scope; a description is an extra on top."""
+    """A document with no description is named and carries none.
+
+    It is still part of the scope, it just has nothing written about it.
+    """
     indexed(catalog, "manuals/a.pdf")
     indexed(catalog, "reports/c.pdf")
     described(catalog, "manuals/a.pdf", "A manual about the thing.")
@@ -98,7 +105,11 @@ def test_a_document_with_nothing_written_about_it_is_still_named(
 
 
 def test_descriptions_stop_at_the_budget_they_are_given(catalog: Catalog) -> None:
-    """A scope over a library spends a paragraph on the catalog, and no more."""
+    """Descriptions are taken until the budget runs out.
+
+    The first one fits. Adding the second would pass the budget, so it is
+    left out while both documents stay in the scope.
+    """
     indexed(catalog, "manuals/a.pdf")
     indexed(catalog, "reports/c.pdf")
     described(catalog, "manuals/a.pdf", "x" * 30)
@@ -143,14 +154,15 @@ def test_a_category_brings_its_documents_and_the_ones_below(
     scope = resolve_scope(catalog, config=make_settings(), category="manuals")
 
     assert scope.sources == ("manuals/a.pdf", "manuals/ancient/b.pdf")
-    # The narrowed scope covers exactly what it filters by, and the answer is
-    # told the same list the search was given.
+
+    # A category names its sources, so the list of documents is the same
+    # one.
     assert scope.documents == scope.sources
     assert scope.label == "category manuals (2 documents)"
 
 
 def test_a_category_is_taken_as_it_is_typed(catalog: Catalog) -> None:
-    """The shell hands over what a person typed, slashes and all."""
+    """Slashes around a category name do not change which one it is."""
     indexed(catalog, "manuals/a.pdf")
 
     scope = resolve_scope(catalog, config=make_settings(), category="/manuals/")
@@ -218,7 +230,7 @@ def test_a_document_too_long_to_fit_is_searched_by_similarity(
 
 
 def test_a_budget_of_zero_never_reads_a_document_whole(catalog: Catalog) -> None:
-    """The way out for a model whose context is smaller than any document."""
+    """No document is read whole when the limit is zero."""
     indexed(catalog, "manuals/a.pdf", chunks=1)
 
     scope = resolve_scope(
@@ -264,7 +276,7 @@ def test_a_document_with_no_vectors_raises(catalog: Catalog) -> None:
 def test_one_document_of_a_selection_with_no_vectors_raises(
     catalog: Catalog,
 ) -> None:
-    """Quietly searching the rest would answer from less than was asked for."""
+    """One trashed document is enough to stop the whole selection."""
     indexed(catalog, "manuals/a.pdf")
     catalog.add_file("manuals/b.pdf", "b", category="manuals")
     catalog.trash("manuals/b.pdf")
@@ -299,5 +311,5 @@ def test_a_path_is_taken_as_the_shell_writes_it(tmp_path: Path) -> None:
 
 
 def test_a_path_that_is_not_a_file_is_left_as_typed(tmp_path: Path) -> None:
-    """So that the lookup fails on the name the person used, and says so."""
+    """A path outside the documents folder is returned unchanged."""
     assert as_source("manuals/ghost.pdf", tmp_path) == "manuals/ghost.pdf"

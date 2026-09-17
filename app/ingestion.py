@@ -1,3 +1,12 @@
+"""Turning a PDF into chunks and writing them to the vector store.
+
+A document is read one page at a time. Each page is split into pieces of roughly
+CHUNK_SIZE characters, and every piece becomes a document in the store carrying
+the metadata that says where it came from. The id of a chunk comes from its own
+text, so indexing the same file twice writes the same rows instead of adding
+copies.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -11,24 +20,32 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app import pdf
 
+# The file types the sync indexes.
 SUPPORTED_EXTENSIONS = {".pdf"}
 
+# A file is hashed in blocks of this size instead of being read into memory.
 _HASH_BLOCK_SIZE = 1 << 20
 
-# What the text of one piece is cut on, in the order it is tried. A blank line
-# first, because a paragraph is where a reader would have cut.
+# Where a chunk may be cut, tried in this order. The empty string is the last
+# resort and cuts between any two characters.
 _SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 
 
 @dataclass(frozen=True)
 class IngestResult:
+    """What indexing one file produced."""
+
     file_hash: str
     page_count: int
     chunk_count: int
 
 
 def compute_file_hash(path: Path) -> str:
-    """sha256 of the file, read in blocks so a large PDF stays out of memory."""
+    """The SHA-256 of a file, read in blocks.
+
+    The sync keeps this hash and compares it with the one it stored last time,
+    which is how it tells whether a file has changed.
+    """
     digest = hashlib.sha256()
 
     with path.open("rb") as handle:
@@ -39,34 +56,21 @@ def compute_file_hash(path: Path) -> str:
 
 
 def indexer_id(*, chunk_size: int, chunk_overlap: int) -> str:
-    """What built an index, as one line: the reader, and the cut it was made with.
+    """What produced the chunks, as a string the catalog records.
 
-    Written onto the catalog row when a document is indexed, and read back on the
-    next run: it is how a document indexed by an older reading, or cut to other
-    sizes, is noticed and made again. Nothing in the vectors themselves says what
-    produced them, and the file has not changed, so without this the index would
-    go on answering from text this code would no longer cut.
-
-    The model that turned the text into numbers is the other half of the same
-    fact, and the catalog keeps it in a column of its own.
+    The reader version and the two chunking numbers are written into one value.
+    When any of the three changes, the recorded value changes with it and the
+    sync indexes the document again.
     """
     return f"{pdf.READER}-{pdf.READER_VERSION}|{chunk_size}/{chunk_overlap}"
 
 
 def whole_number(value: Any) -> int | None:
-    """A number out of a chunk's metadata, as a whole number, or None.
+    """The value as an int, or None when it is not a whole number.
 
-    The ingest writes these as whole numbers and a store hands them back, and a
-    store is free to hand them back differently: Pinecone answers with JSON,
-    where every number is a float, so the page written as 44 comes back as 44.0.
-    Read with `isinstance(value, int)` that is answered no — and every chunk of
-    the real library reads as one with no page and no offsets, a citation counted
-    from the wrong page and a passage with nothing to draw on, neither of them
-    looking wrong enough to be noticed.
-
-    A value that is not a whole number is not one of these and reads as absent,
-    which is what the callers already do with a page nobody gave them: a bool is
-    not a page, and a fraction is not an offset the reader wrote.
+    Metadata comes back from a store as whatever the store kept. A boolean is
+    refused even though Python counts it as an integer, and so is a float with a
+    fractional part.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -75,13 +79,11 @@ def whole_number(value: Any) -> int | None:
 
 
 def _stable_id(doc: Document) -> str:
-    """Create deterministic IDs so re-running ingestion does not create duplicates.
+    """The id a chunk is written under.
 
-    The position of the chunk is part of its identity, not just its text: a page
-    that repeats itself — a table header, a running footer — would otherwise
-    give the same ID to chunks that are different pieces of the document, and
-    the vector store would keep only one of them. The position is the offset the
-    chunk was found at, which is exact where a count of chunks is only ordinal.
+    It is the hash of the source, the page, the position and the text, so the
+    same chunk of the same file always lands on the same id, so writing it again
+    replaces the row it already wrote.
     """
     source = str(doc.metadata.get("source", ""))
     page = str(doc.metadata.get("page", ""))
@@ -92,13 +94,11 @@ def _stable_id(doc: Document) -> str:
 
 
 def load_pdf(path: Path, documents_dir: Path) -> list[Document]:
-    """Load one PDF as one Document per page, with a relative `source` path.
+    """One document per page of a PDF.
 
-    The text is the reader's, the same one the chunks are cut from. Reading the
-    document here and reading it there differently would mean a description
-    written from text that the search cannot find.
+    The metadata carries the path of the file relative to the documents folder,
+    which is the name the store filters on, and the number of the page.
     """
-    # A stable relative path is what citations and metadata filters use.
     source = str(path.relative_to(documents_dir))
 
     return [
@@ -117,17 +117,11 @@ def chunk_document(
     chunk_size: int,
     chunk_overlap: int,
 ) -> list[Document]:
-    """One document as the chunks to index, cut along the structure it declares.
+    """Split a reading into the documents that go into the store.
 
-    A piece is what the cut never crosses. A section's body is split by size as it
-    always was, so the chunks are the size they were, but the cut falls inside one
-    piece: a chunk does not open under one heading and end under the next, and a
-    table is one chunk whatever its size, because a table read in halves is read
-    as prose.
-
-    Every chunk carries where it came from — its page, and the offsets into that
-    page's text — which is what a citation is drawn from, and the section it sits
-    under, which is a name for it that the text alone does not give.
+    Every page is split on its own, so a chunk never spans two pages and each
+    one knows the page it came from. The metadata also records the section a
+    piece belongs to and whether the piece is a table.
     """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
@@ -162,10 +156,13 @@ def chunk_document(
 
 
 def _parts(piece: pdf.Piece, splitter: RecursiveCharacterTextSplitter) -> list[tuple[str, int, int]]:
-    """A piece as the runs to chunk, each with where it sits in the page's text.
+    """Where a piece is split, as its text with the offsets it starts and ends at.
 
-    A table is handed back whole: it is one unit however large it is, so it is
-    never offered to the splitter.
+    A table is kept whole. Anything else is handed to the splitter, and each
+    part it returns is checked against the text of the piece at the offset the
+    splitter reported. A part that does not match at that offset sends the whole
+    piece back unsplit, because an offset that cannot be trusted is of no use
+    for pointing at the page.
     """
     if piece.kind == pdf.TABLE:
         return [(piece.text, piece.start, piece.end)]
@@ -174,12 +171,9 @@ def _parts(piece: pdf.Piece, splitter: RecursiveCharacterTextSplitter) -> list[t
 
     for found in splitter.create_documents([piece.text]):
         index = found.metadata["start_index"]
-
-        # The splitter reports -1 for a chunk it cannot find again in the text it
-        # came from, and an offset of no use to anyone. The piece is taken whole
-        # rather than the offsets being invented: text that is too large is a
-        # fault a reader can see, and a citation pointing at the wrong words is
-        # not.
+        # The splitter reports where the part begins in the text it was given.
+        # If the part is not there at that offset the offsets of the whole piece
+        # cannot be used for the parts, so the piece is returned as it is.
         if index < 0 or not piece.text.startswith(found.page_content, index):
             return [(piece.text, piece.start, piece.end)]
 
@@ -197,11 +191,11 @@ def ingest_one(
     chunk_size: int,
     chunk_overlap: int,
 ) -> IngestResult:
-    """Read, cut and index a single document.
+    """Index one file and report what came of it.
 
-    Returns the counts and the hash of the file as it was read. A `chunk_count`
-    of zero means the PDF had no text to extract: nothing was sent to the vector
-    store, and it is up to the caller to record that as a failure.
+    The chunks are written under ids derived from their text, so indexing a file
+    that has not changed overwrites the same rows. The hash that comes back is
+    what the catalog stores in order to notice a change later.
     """
     source = str(path.relative_to(documents_dir))
     document = pdf.read(path)

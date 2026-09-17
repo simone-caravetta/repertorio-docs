@@ -1,16 +1,11 @@
-"""What each document is about, written by the chat model and kept in the catalog.
+"""Write what each document is about, and keep it in the catalog.
 
-A question about the library is answered from the catalog, and what the catalog
-says about a document is one line on its row. This is the command that writes it:
-one model call per document, over a sample taken from across it, written once and
-read back by the console, by the page and by every answer that has that document
-in scope.
+A description is written by the chat model from a sample of the pages, one call
+per document. With no argument only the documents that have no description are
+described, which is the work the sync does by itself when it has a chat model.
 
-The sync writes a description for every document it indexes that has none, so
-this command is for everything around that: a library indexed before the sync did
-it, a call that failed on the run, and a document whose description is out of
-date because what it is about has changed. `--all` writes them all again, and a
-named document is written again whatever the catalog says about it.
+`--all` describes every indexed document again. Documents named on the command
+line are described whether they have a description or not.
 """
 
 from __future__ import annotations
@@ -36,13 +31,16 @@ def describe(
     db_path: Path | None = None,
     model: BaseChatModel | None = None,
 ) -> DescribeReport:
-    """Describe the documents that need it, then print what it did."""
+    """Describe documents and store what comes back.
+
+    Returns what was written and what failed. With `dry_run` no model is called
+    and nothing is written.
+    """
     documents_dir = Path(documents_dir or settings.documents_dir)
     db_path = Path(db_path or settings.catalog_db_path)
 
-    # Said before any work, like the sync: which store and which catalog the run
-    # is about is worth a line at the top rather than being inferred from a run
-    # that wrote nothing.
+    # Printed before anything happens, so that a run can be read back with the
+    # settings it used.
     print(f"store   {describe_vector_store(settings)}")
     print(f"catalog {short_path(db_path)}\n")
 
@@ -62,9 +60,8 @@ def describe(
         print("\nDry run: no model was called and nothing was written.")
         return DescribeReport()
 
-    # The same lock as sync, delete and a category move: they write the same
-    # rows. Taken here and not around the whole command, because everything above
-    # this line only reads.
+    # The writing happens under the lock, so that a sync and this command do
+    # not write the catalog at the same time.
     with single_run(db_path):
         report = write_descriptions(
             model or build_chat_model(),
@@ -81,12 +78,11 @@ def describe(
 def choose(
     catalog: Catalog, documents: list[str], *, every: bool
 ) -> list[DocumentRecord]:
-    """Which documents this run is about.
+    """The records this run is to describe.
 
-    A named document is described again whatever the catalog already says about
-    it — naming one is asking for it. With nothing named, the run takes what has
-    no description yet, which is what makes this safe to run after every sync:
-    the documents already described cost nothing.
+    A document named on the command line is described again even when it has a
+    description already, and `every` takes all of them. With neither, only the
+    indexed documents that have no description.
     """
     if documents:
         return [lookup(catalog, path) for path in documents]
@@ -99,7 +95,7 @@ def choose(
 
 
 def lookup(catalog: Catalog, path: str) -> DocumentRecord:
-    """The document a named path is, or a message saying which one is not there."""
+    """The record for one document, or a message saying why there is none."""
     record = catalog.get(path)
 
     if record is None:
@@ -119,6 +115,7 @@ def lookup(catalog: Catalog, path: str) -> DocumentRecord:
 
 
 def print_report(report: DescribeReport) -> None:
+    """Print what was written, with the description under each path."""
     for path, description in report.written:
         print(f"write   {path}")
         print(f"        {description}")
@@ -131,6 +128,7 @@ def print_report(report: DescribeReport) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """The command line, with --all checked against the named documents."""
     parser = argparse.ArgumentParser(
         description=(
             "Write what each document is about, one model call per document, and "
@@ -178,6 +176,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Run the describe command."""
     args = parse_args()
     describe(
         args.documents,
