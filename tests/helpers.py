@@ -7,6 +7,7 @@ a test decide the layout of the document the reader is given.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +34,17 @@ BODY = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod."
 # The model name the test settings carry. A test reads it back off a catalog
 # row to check which model indexed the document.
 EMBEDDING_MODEL = "test-model"
+
+
+def verdict_reply(
+    supported: bool, reason: str = "Nothing states it.", query: str = ""
+) -> str:
+    """A grader's reply, in the shape its prompt asks for.
+
+    The reader of that reply is tested on replies that are not shaped like
+    this, so those are written out in full where they are needed.
+    """
+    return json.dumps({"supported": supported, "reason": reason, "query": query})
 
 
 def make_settings(**overrides: object) -> Settings:
@@ -73,8 +85,11 @@ def make_settings(**overrides: object) -> Settings:
         "description_sample_chars": 6000,
         "description_budget_chars": 2000,
 
-        # Reranking stays off here. The tests that cover it turn it on
-        # through an override.
+        # Reranking and grading stay off here, so that a test about something
+        # else reads its replies off one call per step. The tests that cover
+        # them turn them on through an override.
+        "grade": "off",
+        "grade_attempts": 2,
         "rerank": "off",
         "rerank_model": "",
         "rerank_candidates": 20,

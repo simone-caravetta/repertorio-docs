@@ -169,6 +169,7 @@ Every setting is read in `app/config.py` and has a default, so `.env` only needs
 | `DESCRIPTION_SAMPLE_CHARS` | `6000` | how much of a document is read to describe it |
 | `DESCRIPTION_BUDGET_CHARS` | `2000` | how much of the catalog goes into one answer |
 | `RERANK` | `off` | whether a cross-encoder reorders what the search found |
+| `GRADE` | `on` | whether the material is judged before an answer is written |
 | `DOCUMENTS_DIR` | `data/documents` | the folder that is watched |
 
 The two stores hold different vectors, so each keeps its own catalog, `data/catalog.sqlite3` for
@@ -180,11 +181,11 @@ indexed each document, so a sync with a different one notices and rebuilds them.
 
 ## Measuring retrieval
 
-`python -m scripts.eval` runs a set of questions against the same retriever the console uses and
-reports four numbers, none of which costs a model call. Two are counts of the expected document and
-the expected page, which do not change with the position of a passage. The mean reciprocal rank is
-where the document was found. nDCG@10 is the order of everything that came back, so a change that
-moves a passage up the list shows even when nothing was gained or lost.
+`python -m scripts.eval` runs a set of questions against the same retriever the console uses. Four
+of the numbers it reports come from the search alone and cost no model call. Two are counts of the
+expected document and the expected page, which do not change with the position of a passage. The
+mean reciprocal rank is where the document was found. nDCG@10 is the order of everything that came
+back, so a change that moves a passage up the list shows even when nothing was gained or lost.
 
 The set is a JSON file naming, for each question, the document that holds the answer and, when it is
 worth writing down, the page and what a correct answer says. The default is
@@ -202,9 +203,33 @@ worth writing down, the page and what a correct answer says. The default is
 ]
 ```
 
-`--answers` writes an answer to each question from the passages the search returned, and `--judge`
-adds a second call per question, to a model that reads the answer against its context and says
-whether every claim is supported. That last one is the faithfulness number.
+What a run does by default is read the material of each question and say whether it could answer it,
+one model call per question. That is the grade line, and it is the refusal number. `--no-grade`
+leaves it out, and what is left is a run that calls no model at all. `--answers` writes an answer to
+each question from the passages the search returned, and `--judge` adds a second call per question,
+to a model that reads the answer against its context and says whether every claim is supported. That
+last one is the faithfulness number.
+
+A question with no `document` is one the library cannot answer. Those are asked too, and what is
+counted for them is the opposite: whether the material was turned away.
+
+## Grading
+
+A similarity search always returns something, so a question the library cannot answer still comes
+back with the nearest passages there are and an answer is written from them. Before an answer is
+written, a model reads the question and the passages and says whether they hold the answer. When
+they do not, the query written with that verdict is searched for instead, and if that fails too the
+question is turned away.
+
+```text
+GRADE=on                     # on by default
+GRADE_ATTEMPTS=2             # how many searches one question may take
+```
+
+It is on by default because the failure it prevents is the expensive one: an answer written from the
+wrong page, in the same confident voice as an answer written from the right one. It costs one model
+call per question, and one more when the question is turned away. `python -m scripts.eval` measures
+the verdict on every question for the same reason, and `--no-grade` is what leaves it out.
 
 ## Reranking
 

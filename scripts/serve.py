@@ -15,6 +15,8 @@ import uvicorn
 
 from app.api import create_app
 from app.config import Settings, describe_vector_store, settings, short_path
+from app.grading import describe_grade
+from app.rerank import describe_rerank
 
 
 def config_for(args: argparse.Namespace) -> Settings:
@@ -76,6 +78,10 @@ def main() -> None:
     print(f"store: {describe_vector_store(config)}")
     print(f"catalog: {short_path(config.catalog_db_path)}")
     print(f"conversations: {short_path(config.conversations_db_path)}")
+    # What every question asked of this server goes through, so that an answer
+    # can be read back with the pass it came from in mind.
+    print(f"rerank: {describe_rerank(config)}")
+    print(f"grade: {describe_grade(config)}")
     print(f"listening on http://{args.host}:{args.port}\n")
 
     uvicorn.run(create_app(config=config), host=args.host, port=args.port)

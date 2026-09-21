@@ -5,6 +5,13 @@ page as well, so what the search returned can be compared with what was
 expected. The retrieval numbers come from that comparison alone and cost nothing
 to produce.
 
+A model reads the material each question came back with and says whether it
+holds enough to answer the question at all. That is one call per question, and
+it is what a run does by default, because a search always returns its nearest
+passages and the report cannot otherwise tell a question the library answers
+from one it does not. `--no-grade` leaves it out, and what is left is a run that
+calls no model at all.
+
 An answer to each question is written only with `--answers`, and a model reads
 each answer against the passages it was written from only with `--judge`. Both
 of those call the model once or twice per question.
@@ -41,17 +48,21 @@ def evaluate(
     documents: list[str] | None = None,
     answers: bool = False,
     judge: bool = False,
+    grade: bool = True,
     documents_dir: Path | None = None,
     db_path: Path | None = None,
     chat_model: BaseChatModel | None = None,
     judge_model: BaseChatModel | None = None,
+    grade_model: BaseChatModel | None = None,
 ) -> EvalReport:
     """Run the question set and return what came back.
 
     The set and the scope are resolved first, so that a set which cannot be read
     or a category that is not there stops the run before anything is searched.
-    With `answers` a model writes an answer to each question, and with `judge`
-    the answers are read against the passages they were written from.
+    With `answers` a model writes an answer to each question, with `judge` the
+    answers are read against the passages they were written from, and with
+    `grade`, which is on unless it is turned off, the material is read whether it
+    could answer the question.
     """
     config = replace(
         settings, documents_dir=Path(documents_dir or settings.documents_dir)
@@ -75,7 +86,11 @@ def evaluate(
         # The reason goes to the console as it is, and the run stops here.
         raise SystemExit(str(exc)) from exc
 
-    answers = answers or judge
+    # The judge reads answers, so asking for it writes them. Grading reads the
+    # material instead, which is there whether or not anything was written.
+
+    writes = answers or judge
+    model = (chat_model or build_chat_model()) if (writes or grade) else None
 
     print(f"store     {describe_vector_store(config)}")
     print(f"catalog   {short_path(db_path)}")
@@ -83,16 +98,17 @@ def evaluate(
     print(f"scope     {scope.label}")
     print(f"rerank    {describe_rerank(config)}")
 
-    if answers:
-        said = f"{len(questions)} searched, {len(questions)} answered"
-        if judge:
-            said += f", {len(questions)} judged"
-        model = chat_model or build_chat_model()
-    else:
-        said = f"{len(questions)} searched, no model call"
-        model = None
+    said = [f"{len(questions)} searched"]
+    if writes:
+        said.append(f"{len(questions)} answered")
+    if judge:
+        said.append(f"{len(questions)} judged")
+    if grade:
+        said.append(f"{len(questions)} graded")
+    if not (writes or grade):
+        said.append("no model call")
 
-    print(f"run       {said}\n")
+    print(f"run       {', '.join(said)}\n")
 
     report = run_evals(
         questions,
@@ -108,8 +124,9 @@ def evaluate(
         read_at=config.retrieval_k if scope.ranked else None,
         in_scope=scope.documents,
         descriptions=dict(scope.descriptions),
-        chat_model=model,
+        chat_model=model if writes else None,
         judge_model=(judge_model or model) if judge else None,
+        grade_model=(grade_model or model) if grade else None,
     )
 
     print_report(report, ranked=scope.ranked)
@@ -152,6 +169,16 @@ def print_report(report: EvalReport, *, ranked: bool = True) -> None:
             f"judge     {summary.judged} read, {summary.faithful} faithful, "
             f"{summary.unjudged} not answered"
         )
+    if summary.accepted or summary.refused_unanswerable or summary.ungraded:
+        without = summary.asked - summary.measurable
+        said = f"{summary.accepted}/{summary.measurable} answerable accepted"
+        if without:
+            said += (
+                f", {summary.refused_unanswerable}/{without} unanswerable refused"
+            )
+        if summary.ungraded:
+            said += f", {summary.ungraded} not read"
+        print(f"grade     {said}")
 
 
 def describe_result(result: QuestionResult) -> str:
@@ -187,6 +214,14 @@ def describe_result(result: QuestionResult) -> str:
         parts.append("not faithful: " + " | ".join(result.unsupported))
     elif result.judge_error is not None:
         parts.append(f"not judged: {result.judge_error}")
+    if result.verdict is not None:
+        parts.append(
+            "material ok"
+            if result.verdict.supported
+            else f"material missing: {result.verdict.reason}"
+        )
+    elif result.grade_error is not None:
+        parts.append(f"not graded: {result.grade_error}")
 
     return "  ".join(parts) or "nothing measured"
 
@@ -206,8 +241,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Ask a set of questions of the library and measure what the search "
-            "found. Retrieval is measured on its own, and an answer to each "
-            "question is written only when asked for."
+            "found. A model reads the material of each question to say whether it "
+            "could answer, and an answer to each question is written only when "
+            "asked for."
         )
     )
     parser.add_argument(
@@ -245,6 +281,14 @@ def parse_args() -> argparse.Namespace:
         help="have a model read each answer against the passages it was written "
         "from, a second call per question; this is the faithfulness number, and "
         "it writes the answers too",
+    )
+    parser.add_argument(
+        "--no-grade",
+        dest="grade",
+        action="store_false",
+        help="leave out reading the material of each question, which is what a run "
+        "does by default; the report then says nothing about whether the library "
+        "could answer, and no model is called unless --answers or --judge is given",
     )
     parser.add_argument(
         "--documents-dir",
@@ -288,6 +332,7 @@ def main() -> None:
         documents=args.documents,
         answers=args.answers,
         judge=args.judge,
+        grade=args.grade,
         documents_dir=args.documents_dir,
         db_path=args.db,
     )

@@ -6,6 +6,12 @@ question that stands on its own. The second searches with that question and
 builds the context. The third sends the question and the context to the chat
 model.
 
+When grading is on, the search and the answer are joined by two more nodes. One
+reads the question and the material the search returned and says whether that
+material holds the answer. Material that does not is searched for again with a
+query that node wrote, and a question whose material is still missing after
+that is turned away by the other rather than answered.
+
 The state is checkpointed, which is what carries a conversation from one
 question to the next.
 """
@@ -13,6 +19,7 @@ question to the next.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict
 from functools import lru_cache
 from typing import Any
 
@@ -27,7 +34,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from app import grading
 from app.chat_model import build_chat_model
+from app.config import settings
 from app.ingestion import whole_number
 from app.vectorstore import get_retriever
 
@@ -35,14 +44,24 @@ from app.vectorstore import get_retriever
 class RAGState(MessagesState):
     """What the nodes pass to one another.
 
-    `messages` holds the conversation. The other three fields hold the work of
-    one turn, which is the question after it was rewritten, the passages that
-    were found and the context built from them.
+    `messages` holds the conversation. The other fields hold the work of one
+    turn: the question after it was rewritten, the query the search actually
+    ran on, the passages that were found, the context built from them, how that
+    material was judged and how many searches the turn has run.
+
+    The query is separate from the question because a retry searches with a
+    query the grader wrote, while the answer is still written from the question
+    the user asked. The verdict is a plain dictionary and not a `Verdict`,
+    because the checkpointer writes the state out and cannot store a class of
+    this project's own.
     """
 
     contextualized_question: str
+    search_query: str
     retrieved_documents: list[dict[str, Any]]
     context: str
+    verdict: dict[str, Any] | None
+    searches: int
 
 
 # Used by the first node. It rewrites the question so that it can be understood
@@ -117,6 +136,35 @@ other abilities and no access to anything outside these documents.""",
 
 Context:
 {context}""",
+    ),
+])
+
+# Used instead of the answer when the search found nothing that holds the
+# answer. The reply is written from the reason the grader gave, so that it says
+# what the documents are about rather than only that they are silent.
+unsupported_prompt = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        """You tell a user that a collection of documents does not hold what they asked about.
+
+You are given the question and one sentence about the material the search
+returned for it. The material does not answer the question, and searching again
+has not turned up anything better.
+
+Say that the documents do not hold the answer, and what the material that came
+back is about instead. Do not answer the question from your own knowledge, do
+not guess at what a document might say, and do not suggest where else to look.
+
+Write in the language of the question. Two sentences are enough. Do not
+apologise and do not offer further help.""",
+    ),
+    (
+        "human",
+        """Question:
+{question}
+
+What the search found instead:
+{reason}""",
     ),
 ])
 
@@ -220,15 +268,26 @@ def build_graph(
     checkpointer: BaseCheckpointSaver | None = None,
     in_scope: Sequence[str] | None = None,
     descriptions: Mapping[str, str] | None = None,
+    grade: bool | None = None,
+    attempts: int | None = None,
 ) -> CompiledStateGraph:
-    """Build the graph of the three steps and compile it.
+    """Build the graph of the steps and compile it.
 
-    `chat_model` writes both the rewritten question and the answer. The
-    retriever falls back to the one built from the settings. `in_scope` names
-    the documents the search runs over and `descriptions` holds what the catalog
-    says about them. The checkpointer stores the conversation between turns and
-    defaults to one kept in memory.
+    `chat_model` writes the rewritten question and the answer, and grades the
+    material when grading is on. The retriever falls back to the one built from
+    the settings. `in_scope` names the documents the search runs over and
+    `descriptions` holds what the catalog says about them. The checkpointer
+    stores the conversation between turns and defaults to one kept in memory.
+
+    `grade` says whether the material is judged before an answer is written, and
+    `attempts` how many searches one question may take. Both fall back to the
+    settings.
     """
+    if grade is None:
+        grade = grading.enabled(settings)
+    if attempts is None:
+        attempts = settings.grade_attempts
+
     contextualize_chain = contextualize_prompt | chat_model | StrOutputParser()
 
     async def contextualize(state: RAGState) -> dict[str, Any]:
@@ -247,12 +306,17 @@ def build_graph(
             "question": latest.content,
         })
 
-        return {"contextualized_question": question}
+        # The turn starts here, so the count of searches starts here as well. A
+        # second question in the same conversation inherits the state left by
+        # the first, and without this it would inherit its searches too.
+        return {
+            "contextualized_question": question,
+            "search_query": question,
+            "searches": 0,
+        }
 
     async def retrieve(state: RAGState) -> dict[str, Any]:
-        documents = await (retriever or get_retriever()).ainvoke(
-            state["contextualized_question"]
-        )
+        documents = await (retriever or get_retriever()).ainvoke(state["search_query"])
         context, source_rows = format_context(
             documents, in_scope=in_scope, descriptions=descriptions
         )
@@ -260,12 +324,51 @@ def build_graph(
         return {
             "context": context,
             "retrieved_documents": source_rows,
+            "searches": state["searches"] + 1,
         }
 
     async def answer(state: RAGState) -> dict[str, Any]:
         prompt = await answer_prompt.ainvoke({
             "question": state["contextualized_question"],
             "context": state["context"],
+        })
+
+        response = await chat_model.ainvoke(prompt)
+        return {"messages": [response]}
+
+    async def grade_material(state: RAGState) -> dict[str, Any]:
+        verdict = await grading.agrade(
+            chat_model, state["contextualized_question"], state["context"]
+        )
+        written = asdict(verdict)
+
+        # The next search runs on the query the grader wrote, when it wrote one.
+        # A verdict with no query does not send the flow back to the search, so
+        # the query is left as it was.
+        return {
+            "verdict": written,
+            "search_query": written["query"] or state["search_query"],
+        }
+
+    def after_grading(state: RAGState) -> str:
+        """Where the turn goes once the material has been judged."""
+        verdict = state["verdict"]
+
+        if verdict["supported"]:
+            return "answer"
+
+        # The grader's own query is worth one more search, and only while there
+        # are searches left. Past that the question is turned away rather than
+        # answered from material that does not hold it.
+        if verdict["query"] and state["searches"] < attempts:
+            return "retrieve"
+
+        return "unsupported"
+
+    async def unsupported(state: RAGState) -> dict[str, Any]:
+        prompt = await unsupported_prompt.ainvoke({
+            "question": state["contextualized_question"],
+            "reason": state["verdict"]["reason"],
         })
 
         response = await chat_model.ainvoke(prompt)
@@ -278,8 +381,18 @@ def build_graph(
 
     builder.add_edge(START, "contextualize")
     builder.add_edge("contextualize", "retrieve")
-    builder.add_edge("retrieve", "answer")
     builder.add_edge("answer", END)
+
+    if grade:
+        builder.add_node("grade", grade_material)
+        builder.add_node("unsupported", unsupported)
+        builder.add_edge("retrieve", "grade")
+        builder.add_conditional_edges(
+            "grade", after_grading, ["retrieve", "answer", "unsupported"]
+        )
+        builder.add_edge("unsupported", END)
+    else:
+        builder.add_edge("retrieve", "answer")
 
     return builder.compile(checkpointer=checkpointer or InMemorySaver())
 

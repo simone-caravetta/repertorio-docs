@@ -731,6 +731,10 @@ async function ask(question) {
         query.textContent = SEARCHED + data.query;
         query.hidden = false;
       } else if (name === "sources") {
+        /* A question whose material did not answer it is searched again, so
+         * this event can arrive more than once in one turn. What is shown is
+         * what the last search found. */
+        sources.replaceChildren();
         for (const source of data.sources) {
           sources.append(sourceItem(source));
         }

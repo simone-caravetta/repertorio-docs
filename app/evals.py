@@ -11,6 +11,12 @@ landed in the ranking, which expected phrases the answer left out, and, when a
 judge model is given, whether the answer stayed within the passages it was
 written from.
 
+A question may name no document, which is how a question set says the library
+is not expected to answer it. Those questions are the ones a grader model is
+worth asking about, and with a grader every question's material is read and
+recorded as a verdict, so a run reports how often the material was accepted
+where an answer was there and refused where none was.
+
 Summary turns those results into the counts and scores a run is compared on.
 Finding is scored by where the right document and page appear among the
 passages, and answers are scored by the phrases they contain and by the judge's
@@ -34,6 +40,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.retrievers import BaseRetriever
 
+from app.grading import Verdict, grade
 from app.ingestion import whole_number
 from app.rag_graph import answer_prompt, format_context
 
@@ -114,7 +121,11 @@ class QuestionResult:
 
     `answer` is what the model wrote and `missing` the expected phrases it left
     out. A judge fills in `faithful` and the claims it found unsupported.
-    `error` and `judge_error` hold the message when a call failed.
+    `error`, `judge_error` and `grade_error` hold the message when a call failed.
+
+    A grader fills in `verdict`, which is what it decided about the material
+    this question came back with. A question naming no document is expected to
+    be refused.
     """
 
     question: Question
@@ -127,7 +138,9 @@ class QuestionResult:
     missing: list[str] = field(default_factory=list)
     faithful: bool | None = None
     unsupported: list[str] = field(default_factory=list)
+    verdict: Verdict | None = None
     judge_error: str | None = None
+    grade_error: str | None = None
     error: str | None = None
 
 
@@ -149,6 +162,12 @@ class Summary:
 
     `complete` counts the answers holding every expected phrase and `faithful`
     the ones the judge accepted. `unjudged` counts the judge calls that failed.
+
+    `accepted` counts the questions naming a document whose material the grader
+    said could answer them, and `refused_unanswerable` the questions naming none
+    whose material the grader turned away. Both are what the grader was right
+    about, and they are read against the questions of each kind. `ungraded`
+    counts the grading calls that failed.
     """
 
     questions: int
@@ -166,6 +185,9 @@ class Summary:
     judged: int
     faithful: int
     unjudged: int
+    accepted: int
+    refused_unanswerable: int
+    ungraded: int
 
 
 def load_questions(path: Path) -> list[Question]:
@@ -313,11 +335,14 @@ def run_evals(
     descriptions: Mapping[str, str] | None = None,
     chat_model: BaseChatModel | None = None,
     judge_model: BaseChatModel | None = None,
+    grade_model: BaseChatModel | None = None,
 ) -> EvalReport:
     """Run a question set and collect what each question did.
 
     Only the retriever is required. With no chat model the run measures finding
-    alone, and with no judge model it records no verdict on the answers.
+    alone, and with no judge model it records no verdict on the answers. With a
+    grader model every question's material is read and recorded as a verdict,
+    which needs no answer to have been written.
 
     `read_at` limits the ranking numbers to the first N passages returned. That
     matters when a reranker hands back more passages than the retriever was
@@ -343,6 +368,7 @@ def run_evals(
                 descriptions=descriptions,
                 chat_model=chat_model,
                 judge_model=judge_model,
+                grade_model=grade_model,
             )
         )
 
@@ -365,6 +391,7 @@ def _run_one(
     descriptions: Mapping[str, str] | None,
     chat_model: BaseChatModel | None,
     judge_model: BaseChatModel | None,
+    grade_model: BaseChatModel | None,
 ) -> QuestionResult:
     """Run one question. A call that fails is recorded, not raised."""
 
@@ -399,6 +426,15 @@ def _run_one(
         grades=tuple(_grade(passage, question) for passage in passages),
         sources=sources,
     )
+
+    # The verdict comes before the answer, as it does in the graph, and it is
+    # about the material rather than about anything written from it.
+
+    if grade_model is not None:
+        try:
+            result.verdict = grade(grade_model, question.question, context)
+        except Exception as exc:  # noqa: BLE001 - same
+            result.grade_error = str(exc)
 
     if chat_model is None:
         return result
@@ -588,6 +624,7 @@ def summarise(report: EvalReport) -> Summary:
     found = [result.rank for result in measurable if result.rank is not None]
     paged = [result for result in measurable if result.question.page is not None]
     answers = [result for result in asked if result.answer is not None]
+    graded = [result for result in asked if result.verdict is not None]
 
     return Summary(
         questions=len(report.results),
@@ -615,4 +652,24 @@ def summarise(report: EvalReport) -> Summary:
         judged=len([r for r in asked if r.faithful is not None]),
         faithful=len([r for r in asked if r.faithful is True]),
         unjudged=len([r for r in asked if r.judge_error is not None]),
+
+        # A verdict is right when it agrees with what the question set says
+        # about the library. A question naming a document should be accepted
+        # and one naming none should be refused.
+
+        accepted=len(
+            [
+                r
+                for r in graded
+                if r.question.document is not None and r.verdict.supported
+            ]
+        ),
+        refused_unanswerable=len(
+            [
+                r
+                for r in graded
+                if r.question.document is None and not r.verdict.supported
+            ]
+        ),
+        ungraded=len([r for r in asked if r.grade_error is not None]),
     )

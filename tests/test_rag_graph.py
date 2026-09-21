@@ -2,7 +2,9 @@
 
 One turn runs through three nodes: the question is rewritten, the search is
 run with the rewritten one and the answer is written from what it found.
-The tests use a fake model and a fake retriever, so each part can be
+With grading on, the material is judged between the search and the answer, and
+a question the material does not hold is either searched for again or turned
+away. The tests use a fake model and a fake retriever, so each part can be
 checked on its own.
 """
 
@@ -21,6 +23,7 @@ from tests.helpers import (
     FakeRetriever,
     FakeVectorStore,
     as_a_store_returns,
+    verdict_reply,
 )
 
 THREAD = {"configurable": {"thread_id": "test-thread"}}
@@ -41,7 +44,14 @@ def make_graph(
     documents: list[Document] | None = None,
     in_scope: tuple[str, ...] | None = None,
     descriptions: dict[str, str] | None = None,
+    grade: bool = False,
+    attempts: int | None = None,
 ) -> tuple[Any, FakeChatModel, FakeRetriever]:
+    """A graph over a fake model and a fake retriever.
+
+    Grading is off unless a test asks for it, so that a test about the three
+    steps reads its replies off in the order those steps run.
+    """
     model = FakeChatModel(replies=replies)
     retriever = FakeRetriever(
         [make_document()] if documents is None else documents
@@ -51,6 +61,8 @@ def make_graph(
         retriever=retriever,
         in_scope=in_scope,
         descriptions=descriptions,
+        grade=grade,
+        attempts=attempts,
     )
     return graph, model, retriever
 
@@ -390,6 +402,7 @@ async def test_a_scoped_retriever_is_all_a_scoped_answer_takes():
         retriever=WholeDocumentRetriever(
             store=store, source="manuals/manual.pdf", k=1
         ),
+        grade=False,
     )
 
     state = await ask(graph, "what does it say?")
@@ -398,3 +411,202 @@ async def test_a_scoped_retriever_is_all_a_scoped_answer_takes():
         {"source": "manuals/manual.pdf", "page": 1, "ranges": [[0, 28]]}
     ]
     assert "Something else entirely." not in state["context"]
+
+
+# Grading. The verdict is the model's reply between the rewritten question and
+# the answer, and what it says decides whether an answer is written at all.
+
+
+@pytest.mark.asyncio
+async def test_the_material_is_judged_before_an_answer_is_written():
+    """The grader reads the question and the material, and gets one search."""
+
+    graph, model, retriever = make_graph(
+        [
+            "a standalone question",
+            verdict_reply(True, "The manual states it."),
+            "the answer",
+        ],
+        grade=True,
+    )
+
+    state = await ask(graph, "what does it say?")
+
+    assert state["messages"][-1].content == "the answer"
+    assert state["verdict"]["supported"] is True
+    assert retriever.queries == ["a standalone question"]
+
+    # The grader is given the rewritten question and the material found for it.
+    judged = str(model.prompts[1])
+    assert "a standalone question" in judged
+    assert "The thing is explained here." in judged
+
+
+@pytest.mark.asyncio
+async def test_the_verdict_is_kept_as_a_plain_dictionary():
+    """The verdict is stored as a dictionary and not as the class it came in.
+
+    The checkpointer writes the state out, and a class of this project's own
+    is not something it can write.
+    """
+
+    graph, _, _ = make_graph(
+        [
+            "?",
+            verdict_reply(False, "Nothing about the warranty."),
+            "not in the documents",
+        ],
+        grade=True,
+    )
+
+    state = await ask(graph, "how long is the warranty?")
+
+    assert state["verdict"] == {
+        "supported": False,
+        "reason": "Nothing about the warranty.",
+        "query": "",
+    }
+    assert state["messages"][-1].content == "not in the documents"
+
+
+@pytest.mark.asyncio
+async def test_material_that_does_not_hold_the_answer_is_searched_for_again():
+    """A verdict carrying a query sends the flow back to the search."""
+
+    graph, _, retriever = make_graph(
+        [
+            "a standalone question",
+            verdict_reply(
+                False, "Nothing about the warranty.", query="warranty period months"
+            ),
+            # The search that the query sent the flow back to is judged too.
+            verdict_reply(True, "The second search found it."),
+            "the answer",
+        ],
+        grade=True,
+    )
+
+    state = await ask(graph, "how long is the warranty?")
+
+    assert retriever.queries == [
+        "a standalone question",
+        "warranty period months",
+    ]
+    assert state["searches"] == 2
+    assert state["messages"][-1].content == "the answer"
+
+
+@pytest.mark.asyncio
+async def test_the_answer_is_written_from_the_question_and_not_from_the_retry():
+    """Searching again changes what is searched, not what is asked.
+
+    The answer is written from the question the user asked. Writing it from
+    the query the grader made up would change the language and the framing of
+    the answer, which is not what a retry is for.
+    """
+
+    graph, model, _ = make_graph(
+        [
+            "a standalone question",
+            verdict_reply(False, "Nothing about it.", query="a different query"),
+            verdict_reply(True, "It is there after all."),
+            "the answer",
+        ],
+        grade=True,
+    )
+
+    await ask(graph, "how long is the warranty?")
+
+    written_from = str(model.prompts[-1])
+    assert "a standalone question" in written_from
+    assert "a different query" not in written_from
+
+
+@pytest.mark.asyncio
+async def test_a_question_that_is_still_unsupported_is_turned_away():
+    """Two searches are the most one question gets, and then it is refused."""
+
+    graph, model, retriever = make_graph(
+        [
+            "a standalone question",
+            verdict_reply(False, "Nothing about it.", query="better words"),
+            verdict_reply(False, "Still nothing about it.", query="even better words"),
+            "The documents do not cover it.",
+        ],
+        grade=True,
+    )
+
+    state = await ask(graph, "how long is the warranty?")
+
+    assert len(retriever.queries) == 2
+    assert state["searches"] == 2
+    assert state["messages"][-1].content == "The documents do not cover it."
+
+    # The refusal is written from the question and the last reason it was given.
+    refusal = str(model.prompts[-1])
+    assert "Still nothing about it." in refusal
+    assert "a standalone question" in refusal
+
+
+@pytest.mark.asyncio
+async def test_a_bound_of_one_search_leaves_no_room_for_a_retry():
+    graph, _, retriever = make_graph(
+        [
+            "?",
+            verdict_reply(False, "Nothing about it.", query="better words"),
+            "not in the documents",
+        ],
+        grade=True,
+        attempts=1,
+    )
+
+    state = await ask(graph, "how long is the warranty?")
+
+    assert retriever.queries == ["?"]
+    assert state["searches"] == 1
+
+
+@pytest.mark.asyncio
+async def test_the_searches_are_counted_for_one_turn_and_not_for_the_thread():
+    """A second question starts with no searches behind it.
+
+    The state of a conversation is carried from one turn to the next, so the
+    count has to start again with each question. Without that, a long
+    conversation would run out of searches for a reason that has nothing to do
+    with the question being asked.
+    """
+
+    graph, _, retriever = make_graph(
+        [
+            "the first question",
+            verdict_reply(False, "Nothing about it.", query="again"),
+            verdict_reply(True, "It is there."),
+            "the first answer",
+            "the second question",
+            verdict_reply(False, "Nothing about that either.", query="once more"),
+            verdict_reply(True, "It is there."),
+            "the second answer",
+        ],
+        grade=True,
+    )
+
+    await ask(graph, "what are the requirements?")
+    await ask(graph, "and for minors?")
+
+    # The second turn searched twice, so the count had started again.
+    assert retriever.queries == [
+        "the first question",
+        "again",
+        "the second question",
+        "once more",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_judged_when_grading_is_off():
+    graph, model, _ = make_graph(["?", "the answer"])
+
+    state = await ask(graph, "what does it say?")
+
+    assert len(model.prompts) == 2
+    assert state.get("verdict") is None

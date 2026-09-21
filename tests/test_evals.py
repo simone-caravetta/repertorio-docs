@@ -31,7 +31,8 @@ from app.evals import (
     run_evals,
     summarise,
 )
-from tests.helpers import FakeChatModel
+from app.grading import Verdict
+from tests.helpers import FakeChatModel, verdict_reply
 
 MANUAL = "manuals/manual.pdf"
 REPORT = "reports/report.pdf"
@@ -528,6 +529,116 @@ def test_a_verdict_of_no_keeps_what_follows_it() -> None:
     assert claims == ["the price is not there", "and the date is wrong"]
 
 
+# The grader is one more model call per question, and it reads the material the
+# question came back with rather than anything written from it. A question the
+# library is not expected to answer names no document, and a refusal is what
+# the grader owes it.
+
+
+def test_the_verdict_on_the_material_is_kept() -> None:
+    """The verdict is recorded against the question it was made about."""
+    retriever = Retriever({"Prima?": [passage(MANUAL, 1, "two years")]})
+    grader = FakeChatModel(replies=[verdict_reply(True, "The passage states it.")])
+
+    report = run_evals(
+        [question(question="Prima?")],
+        retriever=retriever,
+        in_scope=[MANUAL],
+        grade_model=grader,
+    )
+
+    assert report.results[0].verdict == Verdict(
+        supported=True, reason="The passage states it."
+    )
+
+
+def test_a_question_the_library_cannot_answer_is_read_for_a_refusal() -> None:
+    """Nothing in the library answers it, and the verdict says so."""
+    retriever = Retriever({"Chi ha vinto?": [passage(MANUAL, 1)]})
+    grader = FakeChatModel(
+        replies=[verdict_reply(False, "The passages are about a warranty.", "il vincitore")]
+    )
+
+    report = run_evals(
+        [question(id="fuori", question="Chi ha vinto?", document=None)],
+        retriever=retriever,
+        in_scope=[MANUAL],
+        grade_model=grader,
+    )
+
+    assert report.results[0].verdict == Verdict(
+        supported=False,
+        reason="The passages are about a warranty.",
+        query="il vincitore",
+    )
+
+
+def test_the_grader_reads_the_material_rather_than_an_answer() -> None:
+    """The prompt holds the question and the passages it came back with."""
+    retriever = Retriever({"Prima?": [passage(MANUAL, 4, "the warranty is two years")]})
+    grader = FakeChatModel(replies=[verdict_reply(True)])
+
+    run_evals(
+        [question(question="Prima?")],
+        retriever=retriever,
+        in_scope=[MANUAL],
+        grade_model=grader,
+    )
+
+    read = grader.prompts[0][1].content
+
+    assert "the warranty is two years" in read
+    assert "Prima?" in read
+
+
+def test_grading_needs_no_answer_to_have_been_written() -> None:
+    """A run that grades asks the retriever and the grader, and no more."""
+    retriever = Retriever({"Prima?": [passage(MANUAL, 1)]})
+    grader = FakeChatModel(replies=[verdict_reply(True)])
+
+    report = run_evals(
+        [question(question="Prima?")],
+        retriever=retriever,
+        in_scope=[MANUAL],
+        grade_model=grader,
+    )
+
+    assert report.results[0].answer is None
+    assert report.results[0].verdict is not None
+
+
+def test_a_verdict_is_kept_when_the_answer_fails() -> None:
+    """The verdict is about the material, so a failed answer does not undo it."""
+    retriever = Retriever({"Prima?": [passage(MANUAL, 1)]})
+
+    report = run_evals(
+        [question(question="Prima?")],
+        retriever=retriever,
+        in_scope=[MANUAL],
+        chat_model=FakeChatModel(replies=[]),
+        grade_model=FakeChatModel(replies=[verdict_reply(True)]),
+    )
+
+    assert report.results[0].error is not None
+    assert report.results[0].verdict is not None
+
+
+def test_a_grader_that_cannot_be_asked_is_not_a_verdict() -> None:
+    """A grader that fails is recorded apart from the question's own error."""
+    retriever = Retriever({"Prima?": [passage(MANUAL, 1)]})
+
+    report = run_evals(
+        [question(question="Prima?")],
+        retriever=retriever,
+        in_scope=[MANUAL],
+        grade_model=FakeChatModel(replies=[]),
+    )
+
+    assert report.results[0].verdict is None
+    assert report.results[0].grade_error is not None
+    assert report.results[0].error is None
+
+
 # What a whole run comes to, over the questions it was able to measure.
 
 
@@ -555,6 +666,42 @@ def test_the_numbers_add_up() -> None:
     # its grades are all zero, and it pulls the mean down.
 
     assert summary.ndcg == pytest.approx((1.0 + 1 / log2(4) + 0.0) / 3)
+
+    # No grader ran, so nothing was accepted and nothing was refused. The
+    # question that names no document is not a refusal on its own.
+
+    assert (summary.accepted, summary.refused_unanswerable) == (0, 0)
+    assert summary.ungraded == 0
+
+
+def test_the_verdicts_are_counted_on_both_kinds_of_question() -> None:
+    """A grader is right when it accepts what is there and refuses what is not."""
+    report = EvalReport(results=[
+        QuestionResult(
+            question=question(id="uno"),
+            verdict=Verdict(supported=True, reason="It states it."),
+        ),
+        QuestionResult(
+            question=question(id="due"),
+            verdict=Verdict(supported=False, reason="Nothing on it."),
+        ),
+        QuestionResult(
+            question=question(id="fuori", document=None),
+            verdict=Verdict(supported=False, reason="Nothing on it."),
+        ),
+        QuestionResult(
+            question=question(id="altro", document=None),
+            verdict=Verdict(supported=True, reason="It comes close."),
+        ),
+        QuestionResult(question=question(id="rotto"), grade_error="the model is down"),
+    ])
+
+    summary = summarise(report)
+
+    assert summary.measurable == 3
+    assert summary.accepted == 1
+    assert summary.refused_unanswerable == 1
+    assert summary.ungraded == 1
 
 
 def test_a_run_with_nothing_to_measure_has_no_rank() -> None:

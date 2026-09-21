@@ -29,6 +29,7 @@ from tests.helpers import (
     FakeReranker,
     FakeVectorStore,
     make_settings,
+    verdict_reply,
 )
 
 MANUAL = "manuals/manual.pdf"
@@ -92,14 +93,16 @@ def question_set(tmp_path: Path) -> Path:
     return path
 
 
-def test_the_answers_are_not_written_unless_they_are_asked_for(
+def test_only_the_answers_and_the_judge_have_to_be_asked_for(
     argv: Callable[..., argparse.Namespace],
 ) -> None:
-    """Both flags are off unless they are given on the command line."""
+    """Grading is what a run does; the two that write answers are opt-in."""
     assert argv().answers is False
     assert argv().judge is False
+    assert argv().grade is True
     assert argv("--answers").answers is True
     assert argv("--judge").judge is True
+    assert argv("--no-grade").grade is False
 
 
 def test_every_argument_reaches_the_run(
@@ -112,6 +115,7 @@ def test_every_argument_reaches_the_run(
         "--category", "manuali",
         "--answers",
         "--judge",
+        "--no-grade",
     )
     given: dict[str, object] = {}
     monkeypatch.setattr("scripts.eval.evaluate", lambda **kwargs: given.update(kwargs))
@@ -122,6 +126,7 @@ def test_every_argument_reaches_the_run(
     assert given["category"] == "manuali"
     assert given["answers"] is True
     assert given["judge"] is True
+    assert given["grade"] is False
 
 
 def test_two_scopes_at_once_are_refused(
@@ -148,7 +153,10 @@ def test_a_run_that_writes_no_answer_never_builds_a_model(
     monkeypatch.setattr("scripts.eval.build_chat_model", refuse)
 
     report = evaluate(
-        questions_path=question_set, documents_dir=documents_dir, db_path=db_path
+        questions_path=question_set,
+        documents_dir=documents_dir,
+        db_path=db_path,
+        grade=False,
     )
 
     assert [result.answer for result in report.results] == [None, None]
@@ -171,6 +179,7 @@ def test_a_run_of_answers_writes_them_from_the_passages_it_found(
         db_path=db_path,
         answers=True,
         chat_model=model,
+        grade=False,
     )
 
     assert [result.answer for result in report.results] == [
@@ -198,9 +207,74 @@ def test_judging_writes_the_answers_too(
         db_path=db_path,
         judge=True,
         chat_model=model,
+        grade=False,
     )
 
     assert [result.faithful for result in report.results] == [True, True]
+
+
+def test_grading_reads_the_material_and_writes_no_answers(
+    library: FakeVectorStore,
+    documents_dir: Path,
+    db_path: Path,
+    question_set: Path,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """A graded run reaches the model, and none of its replies is an answer."""
+    model = FakeChatModel(replies=[
+        verdict_reply(True, "The manual states it."),
+        verdict_reply(True, "The report states it."),
+    ])
+
+    report = evaluate(
+        questions_path=question_set,
+        documents_dir=documents_dir,
+        db_path=db_path,
+        grade=True,
+        chat_model=model,
+    )
+
+    assert [result.answer for result in report.results] == [None, None]
+    assert all(result.verdict is not None for result in report.results)
+    assert "2 searched, 2 graded" in capsys.readouterr().out
+
+
+def test_a_question_the_library_cannot_answer_is_reported_refused(
+    library: FakeVectorStore,
+    documents_dir: Path,
+    db_path: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """A question naming no document is asked, and turned away as it should be."""
+    path = tmp_path / "senza" / "questions.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps([
+            {"id": "manuale", "question": SENTENCE.strip(), "document": MANUAL},
+            {"id": "fuori", "question": "Chi ha vinto il campionato?"},
+        ]),
+        encoding="utf-8",
+    )
+    model = FakeChatModel(replies=[
+        verdict_reply(True, "The manual states it."),
+        verdict_reply(False, "Nothing about a championship."),
+    ])
+
+    evaluate(
+        questions_path=path,
+        documents_dir=documents_dir,
+        db_path=db_path,
+        grade=True,
+        chat_model=model,
+    )
+
+    printed = capsys.readouterr().out
+
+    # The whole line, so a question with no document is not read as a miss.
+    assert f"{'fuori':<24} material missing: Nothing about a championship." in printed
+    assert "2 questions, 2 asked, 0 not in scope" in printed
+    assert "grade     1/1 answerable accepted, 1/1 unanswerable refused" in printed
 
 
 def test_a_question_the_scope_does_not_cover_is_not_asked(
@@ -217,6 +291,7 @@ def test_a_question_the_scope_does_not_cover_is_not_asked(
         documents_dir=documents_dir,
         db_path=db_path,
         document=REPORT,
+        grade=False,
     )
 
     assert [result.asked for result in report.results] == [False, True]
@@ -253,7 +328,8 @@ def test_the_header_names_the_reranker_the_run_used(
     configured(rerank="on", rerank_candidates=20, retrieval_k=5)
 
     evaluate(
-        questions_path=question_set, documents_dir=documents_dir, db_path=db_path
+        questions_path=question_set, documents_dir=documents_dir, db_path=db_path,
+        grade=False,
     )
 
     assert (
@@ -275,7 +351,8 @@ def test_the_header_says_when_nothing_was_reranked(
     configured(rerank="off")
 
     evaluate(
-        questions_path=question_set, documents_dir=documents_dir, db_path=db_path
+        questions_path=question_set, documents_dir=documents_dir, db_path=db_path,
+        grade=False,
     )
 
     assert "rerank    off" in capsys.readouterr().out
@@ -298,6 +375,7 @@ def test_a_document_read_whole_is_measured_without_a_ranking(
         documents_dir=documents_dir,
         db_path=db_path,
         document=MANUAL,
+        grade=False,
     )
 
     printed = capsys.readouterr().out
@@ -336,7 +414,8 @@ def test_the_search_is_asked_for_the_cutoff_the_ranking_is_read_to(
     for console_k in (5, NDCG_CUTOFF * 2):
         configured(rerank="off", retrieval_k=console_k)
         evaluate(
-            questions_path=question_set, documents_dir=documents_dir, db_path=db_path
+            questions_path=question_set, documents_dir=documents_dir, db_path=db_path,
+            grade=False,
         )
 
     assert asked == [NDCG_CUTOFF, NDCG_CUTOFF * 2]
@@ -371,7 +450,8 @@ def test_what_was_found_is_read_over_what_the_console_shows(
     for console_k in (5, NDCG_CUTOFF * 2):
         configured(rerank="off", retrieval_k=console_k)
         evaluate(
-            questions_path=question_set, documents_dir=documents_dir, db_path=db_path
+            questions_path=question_set, documents_dir=documents_dir, db_path=db_path,
+            grade=False,
         )
 
     assert read == [5, NDCG_CUTOFF * 2]
@@ -403,6 +483,7 @@ def test_a_document_read_whole_is_read_whole_by_the_numbers_too(
         document=MANUAL,
         documents_dir=documents_dir,
         db_path=db_path,
+        grade=False,
     )
 
     assert read == [None]
@@ -417,6 +498,7 @@ def test_a_question_set_that_cannot_be_read_is_a_message(
             questions_path=tmp_path / "nothing.json",
             documents_dir=documents_dir,
             db_path=db_path,
+            grade=False,
         )
 
 
@@ -433,6 +515,7 @@ def test_a_scope_that_is_not_there_is_a_message(
             documents_dir=documents_dir,
             db_path=db_path,
             category="niente",
+            grade=False,
         )
 
 

@@ -15,6 +15,7 @@ from uuid import uuid4
 from app.catalog import Catalog
 from app.chat_model import build_chat_model
 from app.config import describe_vector_store, settings, short_path
+from app.grading import describe_grade
 from app.rag_graph import (
     build_graph,
     get_thread_state,
@@ -75,6 +76,7 @@ async def run_chat(
     print(f"catalog: {short_path(db_path)}")
     print(f"scope: {scope.label}")
     print(f"rerank: {describe_rerank(settings)}")
+    print(f"grade: {describe_grade(settings)}")
     print("Type 'exit' to quit.\n")
 
     while True:

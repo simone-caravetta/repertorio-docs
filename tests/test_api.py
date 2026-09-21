@@ -9,7 +9,7 @@ console reads them too.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,7 @@ from tests.helpers import (
     make_pdf,
     make_settings,
     make_structured_pdf,
+    verdict_reply,
 )
 
 MANUAL = "manuals/manual.pdf"
@@ -735,6 +736,69 @@ def test_a_failure_in_the_answer_is_reported_inside_the_stream(
     assert names_of(events)[-1] == "error"
 
 
+# Grading. The route reads GRADE from the config the app was built with, so a
+# server started with it on judges the material before writing an answer.
+def test_a_question_the_documents_do_not_answer_is_turned_away(
+    db_path: Path, config: Settings
+):
+    """The refusal is streamed like an answer, and it is what the page shows."""
+    file_document(db_path, MANUAL, category="manuals")
+    harness = harness_for(
+        replace(config, grade="on"),
+        replies=[
+            "a standalone question",
+            verdict_reply(False, "Nothing about the warranty."),
+            "The documents do not cover that.",
+        ],
+    )
+
+    with harness.client() as client:
+        events = events_of(ask(client, "how long is the warranty?"))
+
+    assert names_of(events)[-1] == "done"
+    assert events[-1][1]["answer"] == "The documents do not cover that."
+
+
+def test_a_question_is_searched_again_with_the_query_the_grader_wrote(
+    db_path: Path, config: Settings
+):
+    """The retry reaches the search, and what it found is what is answered."""
+    file_document(db_path, MANUAL, category="manuals")
+    harness = harness_for(
+        replace(config, grade="on"),
+        replies=[
+            "a standalone question",
+            verdict_reply(False, "Nothing about it.", query="warranty period"),
+            verdict_reply(True, "The second search found it."),
+            "the answer",
+        ],
+    )
+
+    with harness.client() as client:
+        events = events_of(ask(client, "how long is the warranty?"))
+
+    assert harness.retriever.queries == ["a standalone question", "warranty period"]
+    assert events[-1][1]["answer"] == "the answer"
+
+
+def test_a_server_built_with_grading_off_answers_every_question(
+    db_path: Path, config: Settings
+):
+    """With GRADE off the route never asks for a verdict.
+
+    Two model calls per question are what every other test in this file
+    scripts for, so this pins which setting produces that.
+    """
+    file_document(db_path, MANUAL, category="manuals")
+    harness = harness_for(config, replies=["a standalone question", "the answer"])
+
+    with harness.client() as client:
+        events = events_of(ask(client, "what does it say?"))
+
+    assert events[-1][1]["answer"] == "the answer"
+    assert len(harness.model.prompts) == 2
+
+
 # The threads endpoint, which reads back the conversations and deletes them.
 def test_the_thread_id_comes_back_and_the_next_question_joins_it(
     db_path: Path, config: Settings
@@ -832,6 +896,40 @@ def test_a_conversation_survives_the_server_being_restarted(
         thread = client.get(f"/api/threads/{thread_id}").json()
 
     assert len(thread["messages"]) == 4
+
+
+def test_a_graded_turn_survives_the_thread_being_written_out(
+    db_path: Path, config: Settings
+):
+    """The state of a graded turn is stored and read back.
+
+    The checkpointer writes the state out, so a verdict has to be something it
+    can write. Reading the thread back is what proves it was.
+    """
+    file_document(db_path, MANUAL, category="manuals")
+
+    first = harness_for(
+        replace(config, grade="on"),
+        replies=[
+            "a standalone question",
+            verdict_reply(False, "Nothing about the warranty."),
+            "The documents do not cover that.",
+        ],
+    )
+    with first.client() as client:
+        thread_id = events_of(ask(client, "how long is the warranty?"))[0][1][
+            "thread_id"
+        ]
+
+    # A new app over the same database stands in for a restart.
+    with harness_for(config, replies=[]).client() as client:
+        thread = client.get(f"/api/threads/{thread_id}").json()
+
+    assert [turn["content"] for turn in thread["messages"]] == [
+        "how long is the warranty?",
+        "The documents do not cover that.",
+    ]
+    assert thread["query"] == "a standalone question"
 
 
 def test_a_conversation_nobody_has_had_yet_is_empty_rather_than_an_error(

@@ -85,6 +85,20 @@ class Settings:
     # Both models are the same kind, and one machine has one answer to this.
     rerank_device: str = os.getenv("RERANK_DEVICE", "") or embedding_device
 
+    # Grading. Before an answer is written, a model reads the question and the
+    # passages the search returned and says whether they hold the answer. If
+    # they do not, its own query is searched for instead, and if that fails too
+    # the question is turned away rather than answered from nothing. See
+    # `app/grading.py`.
+    #
+    # On by default. A similarity search always returns its nearest passages,
+    # however far away they are, so without this a question the library cannot
+    # answer still comes back as a confident answer written from the wrong page.
+    # It costs one model call per question, plus one when the question is turned
+    # away.
+    grade: str = os.getenv("GRADE", "on")
+    grade_attempts: int = int(os.getenv("GRADE_ATTEMPTS", "2"))
+
     # A scope that covers one document is read whole instead of by top-k, as long
     # as its text is estimated to fit in this many characters. Every chunk is
     # handed to the model and nothing is dropped by similarity. Set it to 0 to

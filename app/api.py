@@ -28,7 +28,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, Field
 
-from app import pdf
+from app import grading, pdf
 from app.catalog import Catalog, CategoryBranch, DocumentRecord, build_category_tree
 from app.chat_model import build_chat_model
 from app.config import PROJECT_ROOT, Settings, settings
@@ -156,6 +156,10 @@ def create_app(
             # that were searched and what the catalog says about each of them.
             in_scope=scope.documents,
             descriptions=dict(scope.descriptions),
+            # Read from the config the app was built with, so that a server
+            # started with GRADE off is a server that answers every question.
+            grade=grading.enabled(config),
+            attempts=config.grade_attempts,
         )
 
         return StreamingResponse(
@@ -325,7 +329,9 @@ async def answer_stream(
         ):
             if chunk["type"] == "messages":
                 token, metadata = chunk["data"]
-                if metadata.get("langgraph_node") != "answer":
+                # Either node writes the reply that is shown: the answer, or
+                # the one saying the documents do not hold it.
+                if metadata.get("langgraph_node") not in {"answer", "unsupported"}:
                     continue
 
                 text = token.content
