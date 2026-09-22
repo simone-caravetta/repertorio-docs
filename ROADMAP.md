@@ -362,8 +362,11 @@ doubles as the tool that tells whether a local model is good enough for a given 
       per chunk. It also puts back the text the grading node was refusing on: for
       `atti-vandalici-franchigia` the five passages were five copies of the same "Limiti e
       franchigie" paragraph from five different documents, and the page now carries the
-      paragraph stating which damage the cover includes. Whether the grader accepts that
-      material is not measured yet.
+      paragraph stating which damage the cover includes. One graded pass over the set with this
+      off and one with it on says the same thing: the grader accepts 94 of the 97 questions that
+      name a document against 92, turns away 13 of the 107 first against 21, and accepts
+      `atti-vandalici-franchigia` on the first material. The retry is asked for less often for
+      the same reason, 13 questions against 21, and recovers 1 against 7.
 - [ ] Multi-query expansion with reciprocal rank fusion.
 
 ## Phase 7 — Knowledge graph

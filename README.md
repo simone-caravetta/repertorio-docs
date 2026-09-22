@@ -271,6 +271,16 @@ misses became hits at the fourth or fifth position: several chunks of one docume
 more documents fit in the five slots. Each page that reaches the model is about 1,500 characters
 instead of 250, so there is more text in the context even though there are fewer items.
 
+A graded pass over the same set says the same thing about the material. The grader accepted 94 of the
+97 questions that name a document instead of 92, and turned away the material of 13 of the 107
+instead of 21. `atti-vandalici-franchigia` is the clearest of them: its five passages were five
+copies of the same "Limiti e franchigie" paragraph from five different documents, the grader refused
+them and the second search did not help, where the page in each slot holds the paragraph stating
+which damage the cover includes, and the question is accepted on the first material. The retry is
+asked for less often for the same reason, 13 questions instead of 21, and it recovered 1 instead of
+7: there is less wrongly refused material left for a second search to put right. Those are one
+graded pass each, so a second would move a question or two.
+
 ## Development
 
 ```bash
