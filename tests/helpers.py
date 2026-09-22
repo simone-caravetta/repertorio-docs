@@ -85,15 +85,16 @@ def make_settings(**overrides: object) -> Settings:
         "description_sample_chars": 6000,
         "description_budget_chars": 2000,
 
-        # Reranking and grading stay off here, so that a test about something
-        # else reads its replies off one call per step. The tests that cover
-        # them turn them on through an override.
+        # Reranking, small to big and grading stay off here, so that a test
+        # about something else reads its replies off one call per step. The
+        # tests that cover them turn them on through an override.
         "grade": "off",
         "grade_attempts": 2,
         "rerank": "off",
         "rerank_model": "",
         "rerank_candidates": 20,
         "rerank_device": "cpu",
+        "small_to_big": "off",
     }
     values.update(overrides)
     return Settings(**values)  # type: ignore[arg-type]
@@ -441,13 +442,34 @@ class FakeVectorStore(VectorStore):
     def _matches(
         document: Document, criteria: dict[str, object] | None
     ) -> bool:
+        """Whether a document matches a filter.
+
+        The forms the application writes are read: one field compared with a
+        value, with an `$eq` or against an `$in` list, and an `$and` of those.
+        A field the document does not carry matches nothing.
+        """
         if criteria is None:
             return True
 
-        source = criteria.get("source")
-        if isinstance(source, dict):
-            return document.metadata.get("source") in (source.get("$in") or [])
-        return document.metadata.get("source") == source
+        if "$and" in criteria:
+            return all(
+                FakeVectorStore._matches(document, one)
+                for one in criteria["$and"]  # type: ignore[union-attr]
+            )
+
+        for key, wanted in criteria.items():
+            if not isinstance(wanted, dict):
+                if document.metadata.get(key) != wanted:
+                    return False
+                continue
+
+            value = document.metadata.get(key)
+            if "$eq" in wanted and value != wanted["$eq"]:
+                return False
+            if "$in" in wanted and value not in (wanted["$in"] or []):
+                return False
+
+        return True
 
     @property
     def sources(self) -> list[str]:

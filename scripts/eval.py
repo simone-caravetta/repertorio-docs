@@ -15,6 +15,13 @@ calls no model at all.
 An answer to each question is written only with `--answers`, and a model reads
 each answer against the passages it was written from only with `--judge`. Both
 of those call the model once or twice per question.
+
+A material that was turned away is searched for again over the query that came
+with the verdict, as many times as `GRADE_ATTEMPTS` allows, and the answer is
+written from what the last search found. What the retry is worth is read by
+running the same set twice, once with `--no-grade`: the two runs then hold the
+answers a question gets with the node and without it, and the difference is
+what the node changed.
 """
 
 from __future__ import annotations
@@ -36,8 +43,10 @@ from app.evals import (
     run_evals,
     summarise,
 )
+from app.grading import describe_grade
 from app.rerank import describe_rerank
 from app.scope import build_scoped_retriever, resolve_scope
+from app.small_to_big import enabled as small_to_big_enabled
 
 
 def evaluate(
@@ -97,6 +106,21 @@ def evaluate(
     print(f"questions {short_path(questions_path)} — {len(questions)}")
     print(f"scope     {scope.label}")
     print(f"rerank    {describe_rerank(config)}")
+    # What reaches a model, which is not everything the search returned: a
+    # scope that is searched goes in as its first RETRIEVAL_K passages, and one
+    # read whole goes in entire. With small to big on, each of those passages is
+    # the whole page it came from, and the pages are fewer than the passages
+    # would have been. Two runs that disagree about this are not measuring the
+    # same pipeline.
+    if not scope.ranked:
+        shown = "whole document"
+    else:
+        noun = "pages" if small_to_big_enabled(config) else "passages"
+        shown = f"top {config.retrieval_k} {noun}"
+    print(f"context   {shown}")
+    # What this run does rather than what the settings hold: `--no-grade`
+    # leaves the material unread, and the header is not to promise more.
+    print(f"grade     {describe_grade(config) if grade else 'off'}")
 
     said = [f"{len(questions)} searched"]
     if writes:
@@ -122,11 +146,19 @@ def evaluate(
         # back in reading order, so nothing is cut off here and the report says
         # so through `ranked`.
         read_at=config.retrieval_k if scope.ranked else None,
+        # The answer and the verdict are about the same passages a chat gives
+        # the model, which is the first RETRIEVAL_K of what came back. The
+        # search is still asked for NDCG_CUTOFF of them, because the nDCG is
+        # read over ten; those extras never reach a model.
+        context_k=config.retrieval_k,
         in_scope=scope.documents,
         descriptions=dict(scope.descriptions),
         chat_model=model if writes else None,
         judge_model=(judge_model or model) if judge else None,
         grade_model=(grade_model or model) if grade else None,
+        # The run searches as often as the application does, which is what
+        # makes the report about the pipeline that ships.
+        attempts=config.grade_attempts,
     )
 
     print_report(report, ranked=scope.ranked)
@@ -159,11 +191,18 @@ def print_report(report: EvalReport, *, ranked: bool = True) -> None:
             said += f", nDCG@{NDCG_CUTOFF} {summary.ndcg:.2f}"
         print(f"retrieval {said}")
     if summary.answered:
-        print(
-            f"answers   {summary.answered} written, "
+        checked = summary.answered - summary.unchecked
+        said = (
+            f"{summary.answered} written, "
             f"{summary.complete} as expected, "
-            f"{summary.answered - summary.complete} missing text"
+            f"{checked - summary.complete} missing text"
         )
+        if summary.unchecked:
+            # A question that names no document lists no phrase, so nothing
+            # checks the answer to it. Counting those as expected would read as
+            # a run that answered everything well.
+            said += f", {summary.unchecked} with nothing to check"
+        print(f"answers   {said}")
     if summary.judged or summary.unjudged:
         print(
             f"judge     {summary.judged} read, {summary.faithful} faithful, "
@@ -179,6 +218,12 @@ def print_report(report: EvalReport, *, ranked: bool = True) -> None:
         if summary.ungraded:
             said += f", {summary.ungraded} not read"
         print(f"grade     {said}")
+    if summary.rejected_first:
+        print(
+            f"retry     {summary.rejected_first} of {summary.asked} rejected first, "
+            f"{summary.retried} searched again, {summary.recovered} recovered, "
+            f"{summary.turned_away} turned away"
+        )
 
 
 def describe_result(result: QuestionResult) -> str:
@@ -222,6 +267,8 @@ def describe_result(result: QuestionResult) -> str:
         )
     elif result.grade_error is not None:
         parts.append(f"not graded: {result.grade_error}")
+    if result.searches > 1:
+        parts.append(f"{result.searches} searches")
 
     return "  ".join(parts) or "nothing measured"
 

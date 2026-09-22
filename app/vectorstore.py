@@ -3,7 +3,8 @@
 A store keeps one embedding per chunk of text. Pinecone is the hosted one and
 Chroma keeps the vectors in a folder on this machine. `build_retriever` returns
 the retriever the rest of the project searches with, which is a similarity
-search, or that search refined by the reranker when reranking is on.
+search, refined by the reranker when reranking is on and handing over the page
+each passage came from when small to big is.
 
 A scope that covers one small document is served by `WholeDocumentRetriever`,
 which hands over every chunk of it in reading order.
@@ -22,7 +23,7 @@ from langchain_core.vectorstores import VectorStore
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
 
-from app import rerank
+from app import rerank, small_to_big
 from app.config import settings, validate_api_keys
 from app.embeddings import get_embeddings
 from app.ingestion import whole_number
@@ -162,9 +163,16 @@ def build_retriever(
 
     With reranking on, the store is asked for RERANK_CANDIDATES passages and the
     result is wrapped so that only the best `k` reach the caller.
+
+    With small to big on, that result is wrapped once more, so that the caller
+    receives the page each of those passages came from. The two are wrapped in
+    this order on purpose: the cross-encoder scores the passages the search
+    found, which is the size it was built for, and only the pages that survive
+    it are fetched.
     """
     wanted = settings.retrieval_k if k is None else k
     reranked = rerank.enabled(settings)
+    expanded = small_to_big.enabled(settings)
 
     search_kwargs: dict[str, Any] = {
         "k": max(settings.rerank_candidates, wanted) if reranked else wanted
@@ -176,14 +184,22 @@ def build_retriever(
         search_type="similarity",
         search_kwargs=search_kwargs,
     )
-    if not reranked:
-        return found
 
-    return rerank.RerankedRetriever(
-        retriever=found,
-        reranker=rerank.get_reranker(settings),
-        k=wanted,
-    )
+    if reranked:
+        found = rerank.RerankedRetriever(
+            retriever=found,
+            reranker=rerank.get_reranker(settings),
+            k=wanted,
+        )
+
+    if expanded:
+        found = small_to_big.ExpandedRetriever(
+            retriever=found,
+            store=get_vectorstore(),
+            k=wanted,
+        )
+
+    return found
 
 
 class WholeDocumentRetriever(BaseRetriever):

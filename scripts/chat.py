@@ -24,6 +24,7 @@ from app.rag_graph import (
 )
 from app.rerank import describe_rerank
 from app.scope import build_scoped_retriever, resolve_scope
+from app.small_to_big import describe_small_to_big
 
 
 async def run_chat(
@@ -76,6 +77,7 @@ async def run_chat(
     print(f"catalog: {short_path(db_path)}")
     print(f"scope: {scope.label}")
     print(f"rerank: {describe_rerank(settings)}")
+    print(f"small to big: {describe_small_to_big(settings)}")
     print(f"grade: {describe_grade(settings)}")
     print("Type 'exit' to quit.\n")
 

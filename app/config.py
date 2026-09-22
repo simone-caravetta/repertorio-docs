@@ -85,6 +85,18 @@ class Settings:
     # Both models are the same kind, and one machine has one answer to this.
     rerank_device: str = os.getenv("RERANK_DEVICE", "") or embedding_device
 
+    # Small to big. A search matches on chunks of about a thousand characters,
+    # which is a good size to match on and often too small to answer from: the
+    # sentence that settles the question can sit in the chunk next to the one
+    # that matched. With this on, every passage a search returns is replaced by
+    # the whole page it came from before anything downstream reads it. See
+    # `app/small_to_big.py`.
+    #
+    # Off by default, and it is not a detail of the search the way the two
+    # settings above are: the ranking is read over pages instead of passages, so
+    # a run with this on is not comparable with one without it.
+    small_to_big: str = os.getenv("SMALL_TO_BIG", "off")
+
     # Grading. Before an answer is written, a model reads the question and the
     # passages the search returned and says whether they hold the answer. If
     # they do not, its own query is searched for instead, and if that fails too

@@ -169,6 +169,7 @@ Every setting is read in `app/config.py` and has a default, so `.env` only needs
 | `DESCRIPTION_SAMPLE_CHARS` | `6000` | how much of a document is read to describe it |
 | `DESCRIPTION_BUDGET_CHARS` | `2000` | how much of the catalog goes into one answer |
 | `RERANK` | `off` | whether a cross-encoder reorders what the search found |
+| `SMALL_TO_BIG` | `off` | `page` gives the model the page each passage came from |
 | `GRADE` | `on` | whether the material is judged before an answer is written |
 | `DOCUMENTS_DIR` | `data/documents` | the folder that is watched |
 
@@ -247,6 +248,28 @@ It is off by default because on the library this project was built against the s
 the right page first for every question, so there was nothing to reorder. On a corpus built to be
 harder, ten subjects with four near-identical documents each, the reranker improved MRR from 0.82
 to 0.94 and nDCG@10 from 0.83 to 0.91, at about seven seconds per question on a CPU.
+
+## Small to big
+
+A search matches on chunks of about a thousand characters. That is a good size to match on and often
+too small to answer from, because the sentence that settles the question can sit in the chunk next to
+the one that matched. With this on, every passage the search returns is replaced by the whole page it
+came from, its chunks joined back together in reading order, and two passages of one page become one.
+
+```text
+SMALL_TO_BIG=page            # off by default
+```
+
+The search is unchanged, so the order of the pages is the order of the passages that found them, and
+the reranker still scores the passages rather than the pages. It is off by default because the
+ranking is then read over pages instead of passages: the eval says which of the two it measured on
+its context line, and two runs that disagree there are not comparable.
+
+On that same corpus, over the 97 questions that name a document, it found the right one 91 times
+instead of 86, with MRR 0.77 against 0.76 and nDCG@10 0.83 against 0.79. Five questions that were
+misses became hits at the fourth or fifth position: several chunks of one document now count once, so
+more documents fit in the five slots. Each page that reaches the model is about 1,500 characters
+instead of 250, so there is more text in the context even though there are fewer items.
 
 ## Development
 

@@ -17,6 +17,7 @@ from app.api import create_app
 from app.config import Settings, describe_vector_store, settings, short_path
 from app.grading import describe_grade
 from app.rerank import describe_rerank
+from app.small_to_big import describe_small_to_big
 
 
 def config_for(args: argparse.Namespace) -> Settings:
@@ -81,6 +82,7 @@ def main() -> None:
     # What every question asked of this server goes through, so that an answer
     # can be read back with the pass it came from in mind.
     print(f"rerank: {describe_rerank(config)}")
+    print(f"small to big: {describe_small_to_big(config)}")
     print(f"grade: {describe_grade(config)}")
     print(f"listening on http://{args.host}:{args.port}\n")
 

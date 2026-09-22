@@ -344,8 +344,26 @@ doubles as the tool that tells whether a local model is good enough for a given 
       particular road, and the answer is now told which documents were searched, which is what
       makes a question about the library answerable. Neither stops a passage being retrieved
       and used on no evidence.
-- [ ] Small-to-big retrieval: match on small chunks, hand the surrounding section to the
-      model.
+- [x] Small-to-big retrieval: match on small chunks, hand the surrounding page to the model —
+      **the page, and not the section this item named, which is the finding.** A section is not
+      a unit the store holds: a chunk carries the name of the section it falls under and
+      nothing more, so there is no way to ask for the rest of it. The page is what the store
+      can be asked for, as one filter over the source and the page, and it is the unit the
+      eval already counts its hits in. It is a retriever wrapping a retriever inside
+      `build_retriever`, after the reranker, so the cross-encoder still scores the chunks and
+      only the pages that survive it are fetched: `SMALL_TO_BIG=page`. Off by default, because
+      the ranking is then read over pages instead of passages — the eval's context line says
+      which of the two a report measured, and two reports that disagree there are not
+      comparable. On the harder corpus, over the 97 questions that name a document: 91/97
+      documents against 86/97, MRR 0.77 against 0.76, nDCG@10 0.83 against 0.79, and no
+      question moved down. Five misses became hits at rank 4 or 5: with several chunks of one
+      document counted once, more documents fit in the five passages the ranking is read over.
+      What it costs is the size of the context, about 1,500 characters per page against 250
+      per chunk. It also puts back the text the grading node was refusing on: for
+      `atti-vandalici-franchigia` the five passages were five copies of the same "Limiti e
+      franchigie" paragraph from five different documents, and the page now carries the
+      paragraph stating which damage the cover includes. Whether the grader accepts that
+      material is not measured yet.
 - [ ] Multi-query expansion with reciprocal rank fusion.
 
 ## Phase 7 — Knowledge graph
