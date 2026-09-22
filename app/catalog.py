@@ -2,7 +2,8 @@
 
 One row per document, holding the path, the title, the description, the category
 and the status, together with the numbers the sync compares to tell whether a
-file has changed since it was indexed.
+file has changed since it was indexed. A second table holds the sections of each
+document, and the tables and figures inside them.
 """
 
 from __future__ import annotations
@@ -25,6 +26,16 @@ STATUSES = (
 
 # The same list written out for the schema below.
 _STATUSES_SQL = ", ".join(f"'{status}'" for status in STATUSES)
+
+# What a node of a document's structure can be. `table` is the value the reader
+# gives a piece cut out of a table, and the schema refuses any other value.
+SECTION = "section"
+TABLE = "table"
+FIGURE = "figure"
+
+NODE_KINDS = (SECTION, TABLE, FIGURE)
+
+_KINDS_SQL = ", ".join(f"'{kind}'" for kind in NODE_KINDS)
 
 # The table as it is created on an empty catalog. Columns added since the first
 # version are applied afterwards by `_migrate`.
@@ -49,6 +60,33 @@ CREATE TABLE IF NOT EXISTS documents (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
+
+-- What a document is made of: one row per section, and one for each table and
+-- figure it holds. `ordinal` is the place in the document, and `parent` the
+-- ordinal of the section a row sits in, so the tree is walked in Python rather
+-- than by a query that has to recurse. A section and a table carry the offsets
+-- of their text; a figure has none, and carries the rectangle it is drawn at
+-- instead.
+CREATE TABLE IF NOT EXISTS structure (
+    id       INTEGER PRIMARY KEY,
+    path     TEXT NOT NULL,
+    ordinal  INTEGER NOT NULL,
+    kind     TEXT NOT NULL CHECK (kind IN ({_KINDS_SQL})),
+    title    TEXT,
+    level    INTEGER,
+    parent   INTEGER,
+    page     INTEGER NOT NULL,
+    end_page INTEGER NOT NULL,
+    start    INTEGER,
+    end      INTEGER,
+    x0       REAL,
+    y0       REAL,
+    x1       REAL,
+    y1       REAL,
+    UNIQUE (path, ordinal)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_structure_path ON structure(path);
 """
 
 # Columns added after the first version of the schema, with their types. A
@@ -126,6 +164,55 @@ class DocumentRecord:
                 field.name: row[field.name] if field.name in known else None
                 for field in fields(cls)
             }
+        )
+
+
+@dataclass(frozen=True)
+class Node:
+    """One thing a document holds, and where it holds it.
+
+    `ordinal` is its place in the document and `parent` the ordinal of the
+    section it sits in, or None when it sits in the document itself. `page` and
+    `end_page` count from one, as a person counts pages, and `start` and `end`
+    are offsets into the text of the page each of them names. A figure is a
+    rectangle on a page rather than a stretch of text, so it carries `bbox` and
+    an anchor offset instead of an extent.
+
+    `title` is the heading of a section and the first row of a table, which is
+    what names it in a tree; a figure has none.
+    """
+
+    ordinal: int
+    kind: str
+    title: str | None
+    level: int | None
+    parent: int | None
+    page: int
+    end_page: int
+    start: int | None
+    end: int | None
+    bbox: tuple[float, float, float, float] | None = None
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> Node:
+        """Build a node from a row of the structure table.
+
+        The rectangle of a figure is four columns of the row, and the node
+        keeps it as the one value the reader gives it.
+        """
+
+        box = (row["x0"], row["y0"], row["x1"], row["y1"])
+        return cls(
+            ordinal=row["ordinal"],
+            kind=row["kind"],
+            title=row["title"],
+            level=row["level"],
+            parent=row["parent"],
+            page=row["page"],
+            end_page=row["end_page"],
+            start=row["start"],
+            end=row["end"],
+            bbox=None if box[0] is None else (box[0], box[1], box[2], box[3]),
         )
 
 
@@ -417,6 +504,79 @@ class Catalog:
             path,
         )
 
+    def set_structure(self, path: str, nodes: Iterable[Node]) -> None:
+        """Replace what the catalog holds for one document's structure.
+
+        The tree is the document's own, so its rows are removed and the new
+        ones written in one transaction: a document read again never keeps half
+        of an older tree, and a run that fails part way leaves it as it was.
+        """
+        if not self.create:
+            raise RuntimeError("The catalog was opened read-only")
+
+        rows = [
+            (
+                path,
+                node.ordinal,
+                node.kind,
+                node.title,
+                node.level,
+                node.parent,
+                node.page,
+                node.end_page,
+                node.start,
+                node.end,
+                *(node.bbox or (None, None, None, None)),
+            )
+            for node in nodes
+        ]
+
+        with self._connect() as conn:
+            found = conn.execute(
+                "SELECT 1 FROM documents WHERE path = ?", (path,)
+            ).fetchone()
+
+            if found is None:
+                raise KeyError(f"No such document: {path}")
+
+            conn.execute("DELETE FROM structure WHERE path = ?", (path,))
+            conn.executemany(
+                """
+                INSERT INTO structure (
+                    path, ordinal, kind, title, level, parent, page, end_page,
+                    start, end, x0, y0, x1, y1
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+
+    def structure(self, path: str) -> list[Node]:
+        """The structure of one document, in the order a reader meets it.
+
+        A catalog written before this table existed answers with nothing rather
+        than raising, so a reader can be pointed at any catalog.
+        """
+        try:
+            rows = self._read(
+                "SELECT * FROM structure WHERE path = ? ORDER BY ordinal", (path,)
+            )
+        except sqlite3.OperationalError as error:
+            if "no such table" not in str(error):
+                raise
+
+            return []
+
+        return [Node.from_row(row) for row in rows]
+
     def delete(self, path: str) -> None:
-        """Remove a document from the catalog for good."""
+        """Remove a document from the catalog for good.
+
+        The structure goes with it: those rows are keyed by the path and would
+        outlive the document otherwise. They are removed here rather than by a
+        cascade, because SQLite leaves foreign keys off unless a connection
+        asks for them.
+        """
         self._write("DELETE FROM documents WHERE path = ?", (path,), path)
+
+        with self._connect() as conn:
+            conn.execute("DELETE FROM structure WHERE path = ?", (path,))

@@ -26,6 +26,7 @@ from app.ingestion import (
     indexer_id,
     ingest_one,
 )
+from app.structure import build_one
 
 # The statuses that mean an earlier attempt did not finish, so the document is
 # indexed again on the next run.
@@ -48,6 +49,8 @@ class SyncReport:
     skipped: list[str] = field(default_factory=list)
     described: list[str] = field(default_factory=list)
     description_failed: list[tuple[str, str]] = field(default_factory=list)
+    structured: list[str] = field(default_factory=list)
+    structure_failed: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -197,6 +200,18 @@ def sync_documents(
         # written again on the next run.
         if before is not None and before.file_hash != result.file_hash:
             catalog.clear_description(source)
+
+        # The structure is read from the file again, which costs a second pass
+        # over it. It comes after the vectors are written, so a document that
+        # cannot be read a second time is still indexed and answerable.
+        try:
+            build_one(catalog, source, documents_dir=documents_dir)
+        except Exception as exc:  # noqa: BLE001 - the document is indexed either way
+            report.structure_failed.append(
+                (source, str(exc) or exc.__class__.__name__)
+            )
+        else:
+            report.structured.append(source)
 
     for source in report.added:
         # The row goes in before the file is indexed, so a failure leaves a

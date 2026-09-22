@@ -398,10 +398,30 @@ The orchestration graph decides where to search; it does not hold the relations 
 documents. This phase adds the layer that does, in three tiers, cheapest first — the most
 expensive one only if the measurements justify it.
 
-- [ ] Structure graph, deterministic, from PyMuPDF: headings → sections → subsections →
+- [x] Structure graph, deterministic, from PyMuPDF: headings → sections → subsections →
       pages, and which table or figure belongs to which section. No LLM involved, so
       nothing can be hallucinated, and it is what makes a section-scoped answer possible,
-      or a question about what surrounds a passage.
+      or a question about what surrounds a passage. Built as `app/structure.py`, which turns
+      the reading the reader already makes into a tree — one node per heading, carrying the
+      section that holds it and the pages and offsets it covers, with every table and figure
+      placed in the section it sits in — and keeps it in a `structure` table of the catalog,
+      beside the documents. `python -m scripts.structure` reads every indexed document and
+      writes its tree; the sync writes it as it indexes, so a document indexed from now on
+      needs no second command. It calls no model and opens no vector store, which is what
+      makes it safe on a library that is answering questions, and it costs one more read of
+      each file (~7 s for the 105-page book), taken after the vectors are written so that a
+      document which cannot be read twice is still indexed. Three findings from the real
+      library are worth keeping. The tree is flat there: the book's outline names its 7
+      chapters and nothing else, all at level 1, and the front matter of pages 1–4 carries no
+      heading at all, so it gets no node — depth is something a document brings, not something
+      this can find in one that has none. The CV, which has no outline, gets two levels from
+      the sizes of its text: the name, and the sections under it. And the figure half finds
+      nothing in the book: all 107 of its images cover the whole page, so every one of them is
+      the page scan rather than a figure, and skipping those leaves 0 figures in the book
+      against 1 in the CV. That half is cheap and correct and nearly empty here — the same
+      half-true premise the hybrid search ran into, and the reason to check what a layer finds
+      before building a consumer on it. Nothing reads the tree yet: the section-scoped answer
+      is the next item.
 - [ ] Reference graph: the explicit cross-references ("see section 4.2", "as described in
       the annex", "cfr. art. 5"), extracted by pattern with an LLM fallback for the
       ambiguous ones and stored as edges between parts of documents. Today a section

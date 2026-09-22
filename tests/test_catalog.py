@@ -9,13 +9,18 @@ two of the columns existed, and the helpers that turn a path into a category.
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from app.catalog import (
+    FIGURE,
+    SECTION,
     STATUSES,
+    TABLE,
     Catalog,
+    Node,
     build_category_tree,
     category_from_path,
     normalise_category,
@@ -270,6 +275,155 @@ def test_deleting_an_unknown_document_raises(catalog: Catalog) -> None:
     """Deleting a path that is not in the catalog raises."""
     with pytest.raises(KeyError, match="No such document"):
         catalog.delete("ghost.pdf")
+
+
+def tables_of(db_path: Path) -> set[str]:
+    """Return the names of the tables the database holds."""
+    with sqlite3.connect(db_path) as conn:
+        return {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+
+
+def sample_nodes() -> list[Node]:
+    """A small tree: a section with a table and a figure inside it."""
+    return [
+        Node(
+            ordinal=0,
+            kind=SECTION,
+            title="1  Care",
+            level=1,
+            parent=None,
+            page=1,
+            end_page=2,
+            start=0,
+            end=40,
+        ),
+        Node(
+            ordinal=1,
+            kind=TABLE,
+            title=None,
+            level=None,
+            parent=0,
+            page=1,
+            end_page=1,
+            start=10,
+            end=20,
+        ),
+        Node(
+            ordinal=2,
+            kind=FIGURE,
+            title=None,
+            level=None,
+            parent=0,
+            page=2,
+            end_page=2,
+            start=30,
+            end=30,
+            bbox=(72.0, 140.0, 192.0, 220.0),
+        ),
+    ]
+
+
+def test_the_structure_table_comes_with_the_catalog(tmp_path: Path) -> None:
+    """A catalog created now holds the documents and their structure."""
+    db_path = tmp_path / "catalog.sqlite3"
+
+    Catalog(db_path)
+
+    assert {"documents", "structure"} <= tables_of(db_path)
+
+
+def test_an_older_catalog_is_given_the_structure_table(tmp_path: Path) -> None:
+    """Opening an older database for writing adds the table it lacks."""
+    db_path = old_catalog(tmp_path / "old.sqlite3")
+
+    assert "structure" not in tables_of(db_path)
+
+    catalog = Catalog(db_path)
+
+    assert "structure" in tables_of(db_path)
+    assert catalog.get("a.pdf") is not None
+
+
+def test_a_read_only_catalog_answers_with_no_structure(tmp_path: Path) -> None:
+    """A database written before the table existed reads as having none."""
+    catalog = Catalog(old_catalog(tmp_path / "old.sqlite3"), create=False)
+
+    assert catalog.structure("a.pdf") == []
+
+
+def test_the_structure_of_a_document_is_written_and_read_back(
+    catalog: Catalog,
+) -> None:
+    """Every field of a node survives the round trip to the database."""
+    catalog.add_file("a.pdf", "a")
+
+    catalog.set_structure("a.pdf", sample_nodes())
+
+    assert catalog.structure("a.pdf") == sample_nodes()
+
+
+def test_the_structure_comes_back_in_the_order_it_was_written(catalog: Catalog) -> None:
+    """Nodes read back are in document order, whatever order they arrive in."""
+    catalog.add_file("a.pdf", "a")
+
+    catalog.set_structure("a.pdf", list(reversed(sample_nodes())))
+
+    assert [node.ordinal for node in catalog.structure("a.pdf")] == [0, 1, 2]
+
+
+def test_writing_the_structure_again_replaces_it(catalog: Catalog) -> None:
+    """A document read a second time keeps no part of its older tree."""
+    catalog.add_file("a.pdf", "a")
+    catalog.set_structure("a.pdf", sample_nodes())
+
+    catalog.set_structure("a.pdf", sample_nodes()[:1])
+
+    assert catalog.structure("a.pdf") == sample_nodes()[:1]
+
+
+def test_the_structure_of_an_unknown_document_raises(catalog: Catalog) -> None:
+    """Writing the structure of a document the catalog does not know raises."""
+    with pytest.raises(KeyError, match="No such document"):
+        catalog.set_structure("ghost.pdf", sample_nodes())
+
+
+def test_writing_the_structure_to_a_read_only_catalog_raises(tmp_path: Path) -> None:
+    """A read-only catalog serves the structure and rejects a new one."""
+    db_path = tmp_path / "catalog.sqlite3"
+    Catalog(db_path).add_file("a.pdf", "a")
+
+    catalog = Catalog(db_path, create=False)
+
+    with pytest.raises(RuntimeError, match="read-only"):
+        catalog.set_structure("a.pdf", sample_nodes())
+
+
+def test_a_structure_that_cannot_be_written_leaves_the_previous_one(
+    catalog: Catalog,
+) -> None:
+    """A write that fails part way leaves the tree the document had."""
+    catalog.add_file("a.pdf", "a")
+    catalog.set_structure("a.pdf", sample_nodes())
+
+    unknown = replace(sample_nodes()[0], kind="drawing")
+
+    with pytest.raises(sqlite3.IntegrityError):
+        catalog.set_structure("a.pdf", [unknown])
+
+    assert catalog.structure("a.pdf") == sample_nodes()
+
+
+def test_deleting_a_document_takes_its_structure(catalog: Catalog) -> None:
+    """A document removed for good leaves no node behind."""
+    catalog.add_file("a.pdf", "a")
+    catalog.set_structure("a.pdf", sample_nodes())
+
+    catalog.delete("a.pdf")
+
+    assert catalog.structure("a.pdf") == []
 
 
 def test_all_is_ordered_by_path(catalog: Catalog) -> None:

@@ -152,11 +152,18 @@ def print_report(report: SyncReport, *, dry_run: bool = False) -> None:
     for source, error in report.description_failed:
         print(f"describe {source} failed: {error}")
 
+    # The structure of a document is read once it is indexed, so those lines
+    # come after the documents too.
+    for source in report.structured:
+        print(f"structure {source}")
+    for source, error in report.structure_failed:
+        print(f"structure {source} failed: {error}")
+
     print(
         f"\n{len(report.added)} added, {len(report.updated)} updated, "
         f"{len(report.restored)} restored, {len(report.trashed)} trashed, "
         f"{len(report.failed)} failed, {len(report.skipped)} unchanged, "
-        f"{len(report.described)} described"
+        f"{len(report.described)} described, {len(report.structured)} structured"
     )
 
     if dry_run:

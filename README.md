@@ -82,12 +82,13 @@ it is working on before it starts.
 | `python -m scripts.chat` | asks questions from the console |
 | `python -m scripts.catalog` | shows the categories and their counts |
 | `python -m scripts.describe` | writes a document description |
+| `python -m scripts.structure` | reads the sections of each document |
 | `python -m scripts.delete` | removes a document from the index and the catalog |
 | `python -m scripts.serve` | serves the web interface |
 | `python -m scripts.eval` | measures the search over a set of questions |
 
-`python -m scripts.sync --dry-run` and the same flag on `delete` and `describe` print what a run
-would do without changing anything.
+`python -m scripts.sync --dry-run` and the same flag on `delete`, `describe` and `structure` print
+what a run would do without changing anything.
 
 ## Categories and scopes
 
@@ -132,6 +133,28 @@ The sync writes a description for each document it indexes that has none, so ind
 model call per document. `python -m scripts.sync --no-descriptions` skips them, and
 `python -m scripts.describe` writes them later without indexing anything again. A document whose
 file changed is described again.
+
+## The structure of a document
+
+Beside the text, the catalog keeps what each document is made of: its sections, and the tables and
+figures that sit inside them. The sections come from the outline of the PDF, or from the size of the
+text when there is no outline. A figure has no text of its own, so it is placed by its position on
+the page. Nothing here calls a model, so nothing here can invent a section a document does not have.
+
+`python -m scripts.structure` reads every indexed document and writes its structure. Naming a
+document on the command line reads that one again, and `--dry-run` prints the tree and writes
+nothing.
+
+```bash
+python -m scripts.structure                        # every indexed document
+python -m scripts.structure manuals/a.pdf          # one document, read again
+python -m scripts.structure --dry-run              # the tree, and nothing written
+```
+
+It opens no vector store and calls no model, so it is safe on a library that is already answering
+questions, and it changes nothing about how one is answered. The sync writes the structure as it
+indexes, so a document indexed from now on has one without a second command. A document that cannot
+be read a second time is still indexed and answerable, and the line for it says so.
 
 ## Web interface
 

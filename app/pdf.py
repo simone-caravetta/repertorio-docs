@@ -11,7 +11,12 @@ larger than the body text counts as a heading. Tables are found with PyMuPDF's
 table finder and cut out of the text as pieces of their own.
 
 The result is a list of Piece values. Each one is a stretch of a page together
-with the section it belongs to.
+with the section it belongs to. A Reading carries the pages, the pieces, the
+headings the pieces were cut at and the figures found on them.
+
+Images are read as well, but only the ones that are not the page itself: a
+scanned page is a single image covering the whole sheet, and it says nothing
+about what the document holds. `figures` is where that line is drawn.
 """
 
 from __future__ import annotations
@@ -38,6 +43,12 @@ _HEADING_MAX_CHARS = 120
 # title if it covers this share of it.
 
 _TITLE_SHARE = 1 / 3
+
+
+# An image covering this share of its page or more is the page itself, which is
+# what a scanned document is made of, rather than a figure drawn on it.
+
+_PAGE_IMAGE_SHARE = 0.9
 
 
 TEXT = "text"
@@ -104,6 +115,20 @@ class Heading:
         self.start = start
         self.level = level
         self.title = title
+
+
+class Figure:
+    """An image on a page that is not the page itself.
+
+    `page` counts from zero, as everywhere else here, and `bbox` is the
+    rectangle the image covers, in points.
+    """
+
+    __slots__ = ("bbox", "page")
+
+    def __init__(self, page: int, bbox: tuple[float, float, float, float]) -> None:
+        self.page = page
+        self.bbox = bbox
 
 
 class Piece:
@@ -181,29 +206,47 @@ def boxes(page: Page, start: int, end: int) -> list[list[float]]:
 
 
 class Reading:
-    """A document read once: its pages and the pieces cut from them."""
+    """A document read once.
 
-    __slots__ = ("pages", "pieces")
+    The pages, the pieces cut from them, the headings those pieces were cut at
+    — one list per page — and the figures found on them.
+    """
 
-    def __init__(self, pages: list[Page], pieces: list[Piece]) -> None:
+    __slots__ = ("figures", "headings", "pages", "pieces")
+
+    def __init__(
+        self,
+        pages: list[Page],
+        pieces: list[Piece],
+        headings: list[list[Heading]],
+        figures: list[Figure],
+    ) -> None:
         self.pages = pages
         self.pieces = pieces
+        self.headings = headings
+        self.figures = figures
 
 
 def read(path) -> Reading:
     """Read a file and cut it into pieces.
 
-    A document with no pages comes back with an empty piece list.
+    A document with no pages comes back with empty pieces, headings and
+    figures.
     """
 
     pages = read_pages(path)
     if not pages:
-        return Reading(pages=pages, pieces=[])
+        return Reading(pages=pages, pieces=[], headings=[], figures=[])
 
-    headings = _headings(path, pages)
+    found = _headings(path, pages)
     tables = _tables(path, pages)
 
-    return Reading(pages=pages, pieces=_pieces(pages, headings, tables))
+    return Reading(
+        pages=pages,
+        pieces=_pieces(pages, found, tables),
+        headings=found,
+        figures=figures(path),
+    )
 
 
 def pieces(path) -> list[Piece]:
@@ -492,6 +535,37 @@ def _tables(path, pages: list[Page]) -> list[list[tuple[int, int]]]:
 
             ranges.sort()
             found.append(ranges)
+
+    return found
+
+
+def figures(path) -> list[Figure]:
+    """The images of a document that are not the page they sit on.
+
+    A scan is one image covering the whole sheet, and it is the page rather
+    than something drawn on it: those are left out, and with them the whole of
+    a scanned document. What is kept is an image that covers part of a page,
+    which is what a figure, a chart or a photo in a text is.
+
+    Coordinates are rounded to two decimals, as the rectangles a viewer is
+    given are.
+    """
+
+    found: list[Figure] = []
+
+    with pymupdf.open(path) as document:
+        for page in document:
+            area = page.rect.width * page.rect.height
+            if not area:
+                continue
+
+            for image in page.get_image_info():
+                x0, y0, x1, y1 = image["bbox"]
+                if (x1 - x0) * (y1 - y0) >= area * _PAGE_IMAGE_SHARE:
+                    continue
+
+                bbox = tuple(round(value, 2) for value in image["bbox"])
+                found.append(Figure(page=page.number, bbox=bbox))
 
     return found
 

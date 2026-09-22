@@ -182,18 +182,33 @@ class Table:
     rows: list[list[str]]
 
 
+@dataclass(frozen=True)
+class Image:
+    """A picture to draw on a page, in points.
+
+    With `full_page` the picture covers the whole sheet, which is what a
+    scanned document is made of. The reader is the one that decides whether
+    what it is given is a figure of the document or the page itself.
+    """
+
+    width: float = 0.0
+    height: float = 0.0
+    y: float | None = None
+    full_page: bool = False
+
+
 def make_structured_pdf(
     path: Path,
-    pages: list[list[Line | Table]],
+    pages: list[list[Line | Table | Image]],
     toc: list[list[Any]] | None = None,
 ) -> Path:
     """Write a PDF from a description of its pages.
 
-    Each page is a list of lines and tables. A line without a y is placed
-    under the line before it, so a page can be laid out without working out
-    coordinates. A table is drawn at the cursor and the cursor moves past
-    it. The toc argument writes the document outline, which is where the
-    reader looks for section titles.
+    Each page is a list of lines, tables and images. A line without a y is
+    placed under the line before it, so a page can be laid out without
+    working out coordinates. A table is drawn at the cursor and the cursor
+    moves past it, and so is an image. The toc argument writes the document
+    outline, which is where the reader looks for section titles.
     """
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -208,6 +223,12 @@ def make_structured_pdf(
             if isinstance(item, Table):
                 _draw_table(page, item.rows, y=cursor)
                 cursor += _TABLE_ROW * len(item.rows) + 20
+                continue
+
+            if isinstance(item, Image):
+                _draw_image(page, item, y=cursor)
+                # Nothing is laid out over a whole-page picture.
+                cursor = page.rect.height if item.full_page else cursor + item.height + 20
                 continue
 
             y = cursor if item.y is None else item.y
@@ -227,6 +248,21 @@ def make_structured_pdf(
 # after a table.
 _TABLE_ROW = 22.0
 _TABLE_COLUMN = 120.0
+
+
+def _draw_image(page: pymupdf.Page, item: Image, *, y: float) -> None:
+    # The picture is drawn from four grey pixels: a test is about where an
+    # image sits, not about what it shows.
+    pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 4, 4))
+    pixmap.set_rect(pixmap.irect, (180, 180, 180))
+
+    if item.full_page:
+        rect = pymupdf.Rect(page.rect)
+    else:
+        top = y if item.y is None else item.y
+        rect = pymupdf.Rect(72, top, 72 + item.width, top + item.height)
+
+    page.insert_image(rect, stream=pixmap.tobytes("png"))
 
 
 def _draw_table(page: pymupdf.Page, rows: list[list[str]], *, y: float) -> None:

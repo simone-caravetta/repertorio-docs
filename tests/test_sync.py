@@ -2,15 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.catalog import Catalog
+import pytest
+
+from app.catalog import SECTION, Catalog
 from app.ingestion import compute_file_hash, indexer_id
 from app.lifecycle import SyncReport, sync_documents
 from tests.helpers import (
+    BODY,
     EMBEDDING_MODEL,
     SENTENCE,
     FakeChatModel,
     FakeVectorStore,
+    Line,
     make_pdf,
+    make_structured_pdf,
 )
 
 MANUAL = "manuals/manual.pdf"
@@ -653,3 +658,65 @@ def test_a_description_that_cannot_be_written_leaves_the_document_indexed(
         assert catalog.get(source).status == "indexed"
         assert catalog.get(source).chunk_count > 0
         assert catalog.get(source).description is None
+
+
+# The structure of a document: written as the document is indexed, and never
+# at the cost of the index itself.
+
+
+def structure_of(documents_dir: Path, source: str, title: str) -> None:
+    """Write a document whose text has a heading in it.
+
+    The heading comes from the outline, so the tree the reader finds has one
+    section whatever the font sizes are.
+    """
+    make_structured_pdf(
+        documents_dir / source,
+        pages=[[Line(title, size=22), Line(BODY * 10)]],
+        toc=[[1, title, 1]],
+    )
+
+
+def test_the_sync_writes_the_structure_of_what_it_indexes(
+    documents_dir: Path, db_path: Path, store: FakeVectorStore
+) -> None:
+    """A document indexed by a run has its structure in the catalog after it."""
+    structure_of(documents_dir, MANUAL, "Manutenzione")
+
+    report = run(documents_dir, db_path, store)
+
+    assert report.structured == [MANUAL, REPORT]
+    assert report.structure_failed == []
+
+    catalog = Catalog(db_path)
+    for source in (MANUAL, REPORT):
+        assert catalog.get(source).status == "indexed"
+
+    nodes = catalog.structure(MANUAL)
+    assert [node.title for node in nodes if node.kind == SECTION] == ["Manutenzione"]
+
+
+def test_a_structure_that_cannot_be_read_leaves_the_document_indexed(
+    documents_dir: Path,
+    db_path: Path,
+    store: FakeVectorStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A document that cannot be read twice is still indexed and answerable."""
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise ValueError("no reading today")
+
+    monkeypatch.setattr("app.lifecycle.build_one", refuse)
+
+    report = run(documents_dir, db_path, store)
+
+    assert report.structured == []
+    assert [path for path, _ in report.structure_failed] == [MANUAL, REPORT]
+    assert report.failed == []
+
+    catalog = Catalog(db_path)
+    for source in (MANUAL, REPORT):
+        assert catalog.get(source).status == "indexed"
+        assert catalog.get(source).chunk_count > 0
+        assert catalog.structure(source) == []
