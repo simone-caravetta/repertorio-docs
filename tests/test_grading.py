@@ -55,7 +55,7 @@ def test_a_reply_with_no_query_leaves_it_empty():
 
 
 def test_a_reply_wrapped_in_a_code_fence_is_still_read():
-    """The object is taken between its first brace and its last.
+    """The object is read from its opening brace to the brace that closes it.
 
     A model asked for JSON wraps it in a fence often enough that a rule for
     the fence would be one more thing to maintain.
@@ -70,6 +70,41 @@ def test_a_reply_with_a_sentence_around_it_is_still_read():
     around = f"Here is the verdict.\n{said(supported=False, reason='Nothing on it.')}"
 
     assert parse_verdict(around).supported is False
+
+
+def test_a_reply_that_states_the_verdict_twice_is_read_as_the_first():
+    """A model that repeats itself is read, not failed on.
+
+    The two objects together are not JSON, so a reader that takes everything
+    from the first brace to the last one fails on exactly the reply a model
+    gives when it is most sure of itself. Seen twice on a set of 90.
+    """
+
+    twice = f"{said(reason='Nothing on it.', query='warranty')}\n\n{said()}"
+
+    verdict = parse_verdict(twice)
+
+    assert verdict.reason == "Nothing on it."
+    assert verdict.query == "warranty"
+
+
+def test_a_reply_that_thinks_out_loud_before_the_object_is_still_read():
+    """What comes before the object is not read, and does not stop it.
+
+    A model with a long argument to make writes it out and puts the object at
+    the end. The braces inside that prose would end the object early if it were
+    read as text between two braces.
+    """
+
+    thinking = (
+        "The question asks who pays {the driver or the insurer}. I lean towards "
+        "false.\n\n" + said(supported=False, reason="It does not say who pays.")
+    )
+
+    verdict = parse_verdict(thinking)
+
+    assert verdict.supported is False
+    assert verdict.reason == "It does not say who pays."
 
 
 def test_the_query_is_trimmed():
@@ -121,6 +156,45 @@ def test_the_model_is_given_the_question_and_the_material_it_judges():
     asked = "\n".join(str(one.content) for one in model.prompts[0])
     assert "how long is the warranty?" in asked
     assert "The warranty runs for two years." in asked
+
+
+def test_the_model_is_told_that_a_rule_settles_the_case_it_leaves_out():
+    """A condition excludes a case, and that is an answer to it.
+
+    A question that describes a case the material's own condition excludes was
+    being turned away, on a question set, by every question of that shape.
+    """
+
+    model = FakeChatModel(replies=[said()])
+
+    grade(model, "q", "material")
+
+    # Read with the line breaks flattened, so that the clause is asserted whole
+    # and rewriting the prompt's line breaks does not break the test.
+    asked = " ".join(model.prompts[0][0].content.split())
+    assert "whether it settles it by covering the case or by leaving it out" in asked
+
+
+def test_the_model_is_told_which_language_the_reason_is_written_in():
+    """The reason reaches the reader, so it is written in the question's language."""
+
+    model = FakeChatModel(replies=[said()])
+
+    grade(model, "q", "material")
+
+    asked = " ".join(model.prompts[0][0].content.split())
+    assert "written in the language of the question" in asked
+
+
+def test_the_model_is_told_to_keep_its_reasoning_out_of_the_reply():
+    """Only the object comes back, and the sentence goes in the reason field."""
+
+    model = FakeChatModel(replies=[said()])
+
+    grade(model, "q", "material")
+
+    asked = " ".join(model.prompts[0][0].content.split())
+    assert "none of your reasoning is" in asked
 
 
 def test_a_reply_that_cannot_be_read_stops_the_caller():

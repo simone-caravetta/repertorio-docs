@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
@@ -90,7 +91,16 @@ thing.
 Answer true when a reader could answer from the material, even when the
 answer is spread over more than one passage and even when it is incomplete.
 
-The reason is one sentence about the material.
+The question usually describes a case, and the material usually states the
+rule for cases of that kind. Answer true when the rule settles the case the
+question describes, whether it settles it by covering the case or by leaving
+it out. A question about a case the material's own condition excludes is
+answered by that condition, and so is a question giving an age, a distance or
+a date where the material states a limit: the answer is that the case falls
+outside the rule, and that is an answer.
+
+The reason is one sentence about the material, and it and the query are
+written in the language of the question.
 
 When the answer is false, write a query that would find what is missing.
 Name the thing the question is about in the words a document would use, and
@@ -98,7 +108,10 @@ leave out what the material already settled. When the answer is true, leave
 the query empty.
 
 Reply with one JSON object and nothing else, in this shape:
-{{"supported": true, "reason": "...", "query": "..."}}""",
+{{"supported": true, "reason": "...", "query": "..."}}
+
+Nothing comes before the object or after it, and none of your reasoning is
+written out: it belongs in the reason field, in one sentence.""",
     ),
     (
         "human",
@@ -128,23 +141,44 @@ class Verdict:
 def parse_verdict(reply: str) -> Verdict:
     """Read a model's reply as a verdict.
 
-    The object is taken as the text between its first brace and its last, which
-    is what makes a reply wrapped in a code fence readable without a rule for
-    the fence.
+    The object is the first one in the reply that reads as JSON, taken from its
+    opening brace to the brace that closes it. That is what makes a reply wrapped
+    in a code fence readable without a rule for the fence, and a reply with a
+    sentence around it readable without a rule for the sentence.
+
+    The first object, not the text between the first brace and the last: a model
+    that says the same thing twice writes two objects, which together are not
+    JSON, and reading them as one fails on the reply at the moment the model is
+    most sure of itself. The braces are tried in turn rather than only the first
+    one, because a model that argues with itself writes braces in the argument
+    and puts the object after them. Both were measured on a question set of 90.
 
     A reply that is not one object with the three fields raises ValueError with
     a message saying what was wrong. A caller records the question as failed
     rather than reading a default as a verdict.
     """
 
-    start, end = reply.find("{"), reply.rfind("}")
-    if start == -1 or end < start:
+    at = reply.find("{")
+    if at == -1:
         raise ValueError(f"The verdict is not a JSON object: {reply!r}")
 
-    try:
-        read = json.loads(reply[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"The verdict is not readable as JSON: {reply!r}") from exc
+    decoder = json.JSONDecoder()
+    read: Any = None
+
+    # Each opening brace is tried in turn, and the first one that reads as JSON
+    # is the verdict. A model that argues with itself writes braces in the
+    # argument — `{the driver or the insurer}` — and the object it means comes
+    # after them, so the first brace is not always the one holding it.
+    while at != -1:
+        try:
+            read, _ = decoder.raw_decode(reply, at)
+        except json.JSONDecodeError:
+            at = reply.find("{", at + 1)
+            continue
+        break
+
+    if at == -1:
+        raise ValueError(f"The verdict is not readable as JSON: {reply!r}")
 
     # Every failure below is one thing going wrong the same way for the caller,
     # so they all raise ValueError rather than TypeError.

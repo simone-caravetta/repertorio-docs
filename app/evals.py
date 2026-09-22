@@ -125,7 +125,13 @@ class QuestionResult:
 
     A grader fills in `verdict`, which is what it decided about the material
     this question came back with. A question naming no document is expected to
-    be refused.
+    be refused. `searches` counts how many times the question was put to the
+    search, which is more than one when the grader turned the first material
+    away and wrote a query to try instead. `rejected_first` says whether that
+    first material was turned away, whether or not a second search followed.
+    `rank`, `page_rank` and `grades` describe the first search whichever way
+    the question ended: they measure the search, and a search that recovered on
+    the second query still missed on the one a reader would have typed.
     """
 
     question: Question
@@ -139,6 +145,8 @@ class QuestionResult:
     faithful: bool | None = None
     unsupported: list[str] = field(default_factory=list)
     verdict: Verdict | None = None
+    searches: int = 1
+    rejected_first: bool = False
     judge_error: str | None = None
     grade_error: str | None = None
     error: str | None = None
@@ -160,14 +168,24 @@ class Summary:
     document came back at all and `page_hits` the ones whose page did too.
     `reciprocal_rank` and `ndcg` are averaged over the measurable questions.
 
-    `complete` counts the answers holding every expected phrase and `faithful`
-    the ones the judge accepted. `unjudged` counts the judge calls that failed.
+    `complete` counts the answers that hold every expected phrase, over the
+    questions that list one: a question naming no document lists no phrases
+    either, and an answer to it is `unchecked`, since nothing about it can be
+    compared with what the set says. `faithful` counts the answers the judge
+    accepted and `unjudged` the judge calls that failed.
 
     `accepted` counts the questions naming a document whose material the grader
     said could answer them, and `refused_unanswerable` the questions naming none
     whose material the grader turned away. Both are what the grader was right
     about, and they are read against the questions of each kind. `ungraded`
     counts the grading calls that failed.
+
+    `searches` is how many times the questions were put to the search in all.
+    `rejected_first` counts the questions whose first material was turned away,
+    `retried` the ones searched again over a query the grader wrote, and
+    `recovered` the ones that second material was accepted for. Every question
+    rejected first was either recovered or `turned_away`, which counts the
+    questions left without an answer because no material was accepted for them.
     """
 
     questions: int
@@ -182,12 +200,18 @@ class Summary:
     ndcg: float
     answered: int
     complete: int
+    unchecked: int
     judged: int
     faithful: int
     unjudged: int
     accepted: int
     refused_unanswerable: int
     ungraded: int
+    searches: int
+    rejected_first: int
+    retried: int
+    recovered: int
+    turned_away: int
 
 
 def load_questions(path: Path) -> list[Question]:
@@ -331,11 +355,13 @@ def run_evals(
     *,
     retriever: BaseRetriever,
     read_at: int | None = None,
+    context_k: int | None = None,
     in_scope: Sequence[str] | None = None,
     descriptions: Mapping[str, str] | None = None,
     chat_model: BaseChatModel | None = None,
     judge_model: BaseChatModel | None = None,
     grade_model: BaseChatModel | None = None,
+    attempts: int = 1,
 ) -> EvalReport:
     """Run a question set and collect what each question did.
 
@@ -350,6 +376,19 @@ def run_evals(
     as it does in a chat: a question about a document outside it is skipped.
     `descriptions` is the catalog text for the documents in scope, and it goes
     into the context the answer is written from.
+
+    `context_k` limits the context the answer is written from, and the material
+    the grader reads, to the first N passages. A run that leaves it out gives
+    the model everything the retriever returned, which is more than a chat gives
+    it: the retriever a chat uses keeps RETRIEVAL_K of what it found. A run that
+    is to measure the pipeline that ships passes that same number, or it
+    measures a pipeline with a wider net than the one users talk to.
+
+    `attempts` is how many searches one question may take. It needs a grader,
+    which is what decides to search again: one leaves the flow a single search
+    long, which is what a run of retrieval alone wants, and the command passes
+    the configured `GRADE_ATTEMPTS` so that a run measures the pipeline the
+    application ships rather than a shorter one.
     """
 
     results: list[QuestionResult] = []
@@ -364,11 +403,13 @@ def run_evals(
                 question,
                 retriever=retriever,
                 read_at=read_at,
+                context_k=context_k,
                 in_scope=in_scope,
                 descriptions=descriptions,
                 chat_model=chat_model,
                 judge_model=judge_model,
                 grade_model=grade_model,
+                attempts=attempts,
             )
         )
 
@@ -382,16 +423,31 @@ def _in_scope(question: Question, in_scope: Sequence[str] | None) -> bool:
     return question.document in in_scope
 
 
+def _material(
+    passages: Sequence[Document], context_k: int | None
+) -> Sequence[Document]:
+    """The passages a context is built from.
+
+    All of them, unless the run was told how many the application hands the
+    model: then the first that many, which is what the retriever a chat uses
+    keeps of what it found.
+    """
+
+    return passages if context_k is None else passages[:context_k]
+
+
 def _run_one(
     question: Question,
     *,
     retriever: BaseRetriever,
     read_at: int | None,
+    context_k: int | None,
     in_scope: Sequence[str] | None,
     descriptions: Mapping[str, str] | None,
     chat_model: BaseChatModel | None,
     judge_model: BaseChatModel | None,
     grade_model: BaseChatModel | None,
+    attempts: int,
 ) -> QuestionResult:
     """Run one question. A call that fails is recorded, not raised."""
 
@@ -401,7 +457,7 @@ def _run_one(
         return QuestionResult(question=question, error=str(exc))
 
     context, sources = format_context(
-        passages, in_scope=in_scope, descriptions=descriptions
+        _material(passages, context_k), in_scope=in_scope, descriptions=descriptions
     )
 
     # The ranking is measured over the passages a chat would have read, which
@@ -428,15 +484,48 @@ def _run_one(
     )
 
     # The verdict comes before the answer, as it does in the graph, and it is
-    # about the material rather than about anything written from it.
+    # about the material rather than about anything written from it. A material
+    # the grader turned away is searched for again with the query written
+    # beside the verdict, which is the loop the graph runs.
 
-    if grade_model is not None:
+    while grade_model is not None:
         try:
             result.verdict = grade(grade_model, question.question, context)
         except Exception as exc:  # noqa: BLE001 - same
             result.grade_error = str(exc)
+            break
+
+        first = result.searches == 1
+        if result.verdict.supported:
+            break
+
+        if first:
+            result.rejected_first = True
+
+        if not result.verdict.query or result.searches >= attempts:
+            break
+
+        try:
+            passages = retriever.invoke(result.verdict.query)
+        except Exception as exc:  # noqa: BLE001 - same
+            result.error = str(exc)
+            return result
+
+        context, sources = format_context(
+            _material(passages, context_k), in_scope=in_scope, descriptions=descriptions
+        )
+        result.sources = sources
+        result.searches += 1
 
     if chat_model is None:
+        return result
+
+    # With a grader, an answer is written only from material the grader
+    # accepted. A question whose material was turned away is not answered —
+    # what the graph writes for it is a refusal, which is not an answer to
+    # check against the phrases the set expects.
+
+    if result.verdict is not None and not result.verdict.supported:
         return result
 
     try:
@@ -625,6 +714,7 @@ def summarise(report: EvalReport) -> Summary:
     paged = [result for result in measurable if result.question.page is not None]
     answers = [result for result in asked if result.answer is not None]
     graded = [result for result in asked if result.verdict is not None]
+    rejected = [result for result in asked if result.rejected_first]
 
     return Summary(
         questions=len(report.results),
@@ -648,7 +738,8 @@ def summarise(report: EvalReport) -> Summary:
             else 0.0
         ),
         answered=len(answers),
-        complete=len([result for result in answers if not result.missing]),
+        complete=len([r for r in answers if r.question.contains and not r.missing]),
+        unchecked=len([r for r in answers if not r.question.contains]),
         judged=len([r for r in asked if r.faithful is not None]),
         faithful=len([r for r in asked if r.faithful is True]),
         unjudged=len([r for r in asked if r.judge_error is not None]),
@@ -672,4 +763,16 @@ def summarise(report: EvalReport) -> Summary:
             ]
         ),
         ungraded=len([r for r in asked if r.grade_error is not None]),
+
+        # What the second search did, over the questions whose first material
+        # the grader turned away. Each of those ended either accepted — a
+        # recovery — or without an answer at all.
+
+        searches=sum(r.searches for r in asked),
+        rejected_first=len(rejected),
+        retried=len([r for r in asked if r.searches > 1]),
+        recovered=len(
+            [r for r in rejected if r.verdict is not None and r.verdict.supported]
+        ),
+        turned_away=len([r for r in graded if not r.verdict.supported]),
     )

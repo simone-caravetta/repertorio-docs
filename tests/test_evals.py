@@ -388,6 +388,43 @@ def test_the_answer_is_written_from_the_passages_that_were_found() -> None:
     assert "Prima?" in asked
 
 
+def test_a_run_can_give_the_model_as_many_passages_as_a_chat_does() -> None:
+    """The context is cut to what the console hands over, not the whole search.
+
+    A run that is asked for more passages than a chat reads — ten, so the nDCG
+    can be read over them — would otherwise measure a pipeline with a wider net
+    than the one a user talks to.
+    """
+
+    retriever = Retriever({
+        "Prima?": [
+            passage(MANUAL, 1, "the first passage"),
+            passage(MANUAL, 2, "the second passage"),
+            passage(MANUAL, 3, "the third passage"),
+        ]
+    })
+    model = FakeChatModel(replies=["Two years."])
+
+    report = run_evals(
+        [question(question="Prima?")],
+        retriever=retriever,
+        context_k=2,
+        in_scope=[MANUAL],
+        chat_model=model,
+    )
+
+    asked = model.prompts[0][1].content
+
+    assert "the first passage" in asked
+    assert "the second passage" in asked
+    assert "the third passage" not in asked
+
+    # The ranking is still read over everything the search returned, and the
+    # rows are the passages the context was built from.
+    assert report.results[0].grades == (1, 1, 1)
+    assert [row["page"] for row in report.results[0].sources] == [2, 3]
+
+
 def test_an_answer_that_does_not_hold_what_was_expected_is_reported_missing() -> None:
     """Only the expected text the answer misses is reported."""
     retriever = Retriever({"Prima?": [passage(MANUAL, 1)]})
@@ -637,6 +674,224 @@ def test_a_grader_that_cannot_be_asked_is_not_a_verdict() -> None:
     assert report.results[0].verdict is None
     assert report.results[0].grade_error is not None
     assert report.results[0].error is None
+
+
+# The second search. A material the grader turned away is searched for again
+# with the query written beside the verdict, which is the loop the graph runs:
+# the point of it is a question the first search missed and the next one found.
+
+
+def test_a_material_that_was_turned_away_is_searched_for_again() -> None:
+    """The query written with the verdict is what the search is asked next."""
+
+    retriever = Retriever({
+        "Prima?": [passage(REPORT, 1, "another document's passage")],
+        "il vincitore": [passage(MANUAL, 4, "the warranty is two years")],
+    })
+    grader = FakeChatModel(replies=[
+        verdict_reply(False, "The passage is about another document.", "il vincitore"),
+        verdict_reply(True, "The passage states it."),
+    ])
+
+    report = run_evals(
+        [question(question="Prima?")],
+        retriever=retriever,
+        in_scope=[MANUAL, REPORT],
+        grade_model=grader,
+        attempts=2,
+    )
+
+    result = report.results[0]
+
+    assert retriever.queries == ["Prima?", "il vincitore"]
+    assert result.searches == 2
+    assert result.rejected_first is True
+    assert result.verdict == Verdict(supported=True, reason="The passage states it.")
+    assert result.sources == [{"source": MANUAL, "page": 5, "ranges": []}]
+
+
+def test_a_question_the_search_missed_is_answered_from_the_second_one() -> None:
+    """The answer is written from the material the grader accepted, not the first."""
+
+    retriever = Retriever({
+        "Prima?": [passage(REPORT, 1, "the report is about something else")],
+        "il vincitore": [passage(MANUAL, 4, "the warranty is two years")],
+    })
+    grader = FakeChatModel(replies=[
+        verdict_reply(False, "It is about another document.", "il vincitore"),
+        verdict_reply(True, "It states it."),
+    ])
+    answers = FakeChatModel(replies=["Two years."])
+
+    report = run_evals(
+        [question(question="Prima?", contains=("two years",))],
+        retriever=retriever,
+        in_scope=[MANUAL, REPORT],
+        chat_model=answers,
+        grade_model=grader,
+        attempts=2,
+    )
+
+    asked = answers.prompts[0][1].content
+
+    assert "the warranty is two years" in asked
+    assert "the report is about something else" not in asked
+    assert report.results[0].missing == []
+
+    # The search missed, and the report says so: the ranking is read on the
+    # query a reader would have typed, not on the one written for it after.
+
+    assert report.results[0].rank is None
+
+
+def test_the_ranking_is_read_on_the_first_search() -> None:
+    """A recovery does not move the rank the question was found at."""
+
+    retriever = Retriever({
+        "Prima?": [passage(REPORT, 1), passage(REPORT, 2), passage(MANUAL, 3)],
+        "il vincitore": [passage(MANUAL, 4)],
+    })
+    grader = FakeChatModel(replies=[
+        verdict_reply(False, "Not enough here.", "il vincitore"),
+        verdict_reply(True, "It states it."),
+    ])
+
+    report = run_evals(
+        [question(question="Prima?")],
+        retriever=retriever,
+        in_scope=[MANUAL, REPORT],
+        grade_model=grader,
+        attempts=2,
+    )
+
+    assert report.results[0].rank == 3
+    assert report.results[0].searches == 2
+
+
+def test_the_search_is_tried_as_often_as_the_run_allows() -> None:
+    """One attempt leaves the query the verdict wrote unused."""
+    retriever = Retriever({
+        "Prima?": [passage(REPORT, 1)],
+        "il vincitore": [passage(MANUAL, 4)],
+    })
+    grader = FakeChatModel(
+        replies=[verdict_reply(False, "Not enough here.", "il vincitore")]
+    )
+
+    report = run_evals(
+        [question(question="Prima?")],
+        retriever=retriever,
+        in_scope=[MANUAL, REPORT],
+        grade_model=grader,
+        attempts=1,
+    )
+
+    assert retriever.queries == ["Prima?"]
+    assert report.results[0].searches == 1
+    assert report.results[0].rejected_first is True
+    assert report.results[0].verdict == Verdict(
+        supported=False, reason="Not enough here.", query="il vincitore"
+    )
+
+
+def test_a_verdict_with_no_query_does_not_search_again() -> None:
+    """A grader with nothing better to try ends the question where it is."""
+    retriever = Retriever({
+        "Prima?": [passage(REPORT, 1)],
+        "il vincitore": [passage(MANUAL, 4)],
+    })
+    grader = FakeChatModel(replies=[verdict_reply(False, "Not enough here.")])
+
+    report = run_evals(
+        [question(question="Prima?")],
+        retriever=retriever,
+        in_scope=[MANUAL, REPORT],
+        grade_model=grader,
+        attempts=2,
+    )
+
+    assert retriever.queries == ["Prima?"]
+    assert report.results[0].searches == 1
+    assert report.results[0].rejected_first is True
+
+
+def test_a_question_whose_material_was_turned_away_is_not_answered() -> None:
+    """Material the grader refused is not written an answer from."""
+    retriever = Retriever({"Prima?": [passage(REPORT, 1)]})
+
+    report = run_evals(
+        [question(question="Prima?")],
+        retriever=retriever,
+        in_scope=[MANUAL, REPORT],
+        chat_model=FakeChatModel(replies=["Two years."]),
+        grade_model=FakeChatModel(replies=[verdict_reply(False, "Not enough here.")]),
+        attempts=2,
+    )
+
+    assert report.results[0].verdict is not None
+    assert report.results[0].answer is None
+
+
+def test_a_second_search_that_fails_ends_that_question() -> None:
+    """A search that raises on the second query is recorded, not raised."""
+    retriever = Retriever({"Prima?": [passage(MANUAL, 1)]})
+    grader = FakeChatModel(
+        replies=[verdict_reply(False, "Not enough here.", "il vincitore")]
+    )
+
+    class Half:
+        """A search that answers once and then cannot be reached."""
+
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def invoke(self, query: str, config: object = None, **kwargs: object) -> list[Document]:
+            self.queries.append(query)
+            if len(self.queries) > 1:
+                raise RuntimeError("the index is unreachable")
+            return retriever.invoke(query)
+
+    half = Half()
+
+    report = run_evals(
+        [question(question="Prima?")],
+        retriever=half,  # type: ignore[arg-type]
+        in_scope=[MANUAL],
+        grade_model=grader,
+        attempts=2,
+    )
+
+    assert report.results[0].error == "the index is unreachable"
+    assert half.queries == ["Prima?", "il vincitore"]
+
+
+def test_what_the_second_search_came_to() -> None:
+    """Every question rejected first was recovered or turned away."""
+    report = EvalReport(results=[
+        QuestionResult(
+            question=question(id="recuperata"),
+            searches=2,
+            rejected_first=True,
+            verdict=Verdict(supported=True, reason="It states it."),
+        ),
+        QuestionResult(
+            question=question(id="respinta"),
+            searches=1,
+            rejected_first=True,
+            verdict=Verdict(supported=False, reason="Nothing on it."),
+        ),
+        QuestionResult(
+            question=question(id="subito"),
+            verdict=Verdict(supported=True, reason="It states it."),
+        ),
+    ])
+
+    summary = summarise(report)
+
+    assert (summary.searches, summary.rejected_first) == (4, 2)
+    assert (summary.retried, summary.recovered) == (1, 1)
+    assert summary.turned_away == 1
+    assert summary.recovered + summary.turned_away == summary.rejected_first
 
 
 # What a whole run comes to, over the questions it was able to measure.
