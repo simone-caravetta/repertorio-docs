@@ -340,7 +340,7 @@ doubles as the tool that tells whether a local model is good enough for a given 
       five. So the case for the sparse half rests on the ordering of a fifth of one family
       rather than on blindness: worth building against a real sparse arm to see what it does,
       not worth assuming, and no longer expected to be the largest number in the table.
-- [ ] Relevance grading node with a conditional edge: rewrite the query and retry, or state
+- [x] Relevance grading node with a conditional edge: rewrite the query and retry, or state
       that the answer is not in the documents. Seen while building the interface, and the
       reason this node is not optional: a question with no content of its own ("ciao")
       retrieves five arbitrary passages, the answer is written from them, and the next
@@ -349,7 +349,24 @@ doubles as the tool that tells whether a local model is good enough for a given 
       `contextualize` was changed to forbid naming a document in the query, which stops that
       particular road, and the answer is now told which documents were searched, which is what
       makes a question about the library answerable. Neither stops a passage being retrieved
-      and used on no evidence.
+      and used on no evidence, so the node was built: `grade` reads the question and the
+      material and edges to `answer` when the material holds the answer, back to `retrieve`
+      with the query the verdict wrote when searching again is worth it, and to `unsupported`
+      when it is not. `GRADE=on` by default, `GRADE_ATTEMPTS=2` at most, and the verdict lives
+      in `app/grading.py` rather than in the graph so the eval can score it without running
+      the graph. Two things were learned in the writing. The verdict is a model reading, so it
+      does not repeat: two graded passes over the same set the same afternoon came out
+      21/7/14 and 19/5/14 — rejected first, recovered, turned away. And a model asked for
+      JSON will sometimes wrap the object in prose, so the parser reads the first brace that
+      parses rather than the whole reply. It works: over the mock corpus the grader accepts
+      94 of the 97 questions a document answers once a refinement is on, against 92 at the
+      plain baseline, turns away 13 of the 107 first against 21, and one question it had
+      refused on bad material — `atti-vandalici-franchigia`, five copies of the same paragraph
+      from five documents — is accepted once the pages are handed over instead of the chunks.
+      What is left open is the
+      other side of the same reading: three answerable questions still have their material
+      refused with everything on, and one question the library cannot answer is accepted in
+      every configuration measured, which is a false positive no setting so far touches.
 - [x] Small-to-big retrieval: match on small chunks, hand the surrounding page to the model —
       **the page, and not the section this item named, which is the finding.** A section is not
       a unit the store holds: a chunk carries the name of the section it falls under and
