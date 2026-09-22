@@ -131,6 +131,23 @@ class Settings:
     description_budget_chars: int = int(
         os.getenv("DESCRIPTION_BUDGET_CHARS", "2000")
     )
+    # What the answer is told about the shape of the documents it searched. The
+    # headings of each document and the pages they cover, read from the
+    # `structure` table, go into the context under the description, which is what
+    # makes a question about a document rather than about what it says — how many
+    # parts it has, which one holds something, what comes before or after a
+    # passage — answerable from the tree instead of guessed from the passages.
+    # See `app/structure.py`.
+    #
+    # Spent the way DESCRIPTION_BUDGET_CHARS is spent, with the documents taken
+    # in the order of the scope until the budget runs out. A document whose
+    # outline does not fit whole is left out rather than cut: half a list of
+    # chapters reads as a document that has fewer chapters, and the two cannot
+    # be told apart by whoever is reading it. Set it to 0 to leave the outlines
+    # out, which is what every run measured before this setting existed did.
+    outline_budget_chars: int = int(
+        os.getenv("OUTLINE_BUDGET_CHARS", "4000")
+    )
 
     documents_dir: Path = PROJECT_ROOT / os.getenv(
         "DOCUMENTS_DIR", "data/documents"

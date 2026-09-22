@@ -16,7 +16,7 @@ from pathlib import Path
 
 from app.catalog import SECTION, Catalog, DocumentRecord, Node
 from app.config import settings, short_path
-from app.structure import StructureReport, build_documents, counts
+from app.structure import StructureReport, build_documents, counts, pages_label
 from scripts.locks import single_run
 
 
@@ -145,11 +145,6 @@ def _right(node: Node) -> str:
     x0, y0, x1, y1 = node.bbox
 
     return f"{label}  {round(x1 - x0)} x {round(y1 - y0)} pt"
-
-
-def pages_label(first: int, last: int) -> str:
-    """The pages a node covers, the way a person writes them."""
-    return f"p.{first}" if first == last else f"pp.{first}-{last}"
 
 
 def counts_label(sections: int, tables: int, figures: int) -> str:

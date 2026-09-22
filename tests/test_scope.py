@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from app.catalog import Catalog, category_from_path
+from app.catalog import SECTION, Catalog, Node, category_from_path
 from app.scope import as_source, resolve_scope, whole_library
 from tests.helpers import make_pdf, make_settings
 
@@ -24,6 +25,31 @@ def indexed(catalog: Catalog, path: str, *, chunks: int = 2) -> None:
 def described(catalog: Catalog, path: str, text: str) -> None:
     """Write a description on a document the catalog already holds."""
     catalog.set_description(path, text)
+
+
+def structured(catalog: Catalog, path: str, *titles: str) -> None:
+    """Write a tree on a document the catalog already holds.
+
+    The sections are all on the first page and none holds another, so each
+    title is one line of the outline with no indent.
+    """
+    catalog.set_structure(
+        path,
+        [
+            Node(
+                ordinal=ordinal,
+                kind=SECTION,
+                title=title,
+                level=1,
+                parent=None,
+                page=1,
+                end_page=1,
+                start=0,
+                end=10,
+            )
+            for ordinal, title in enumerate(titles)
+        ],
+    )
 
 
 def test_a_question_with_no_scope_is_asked_of_the_whole_library(
@@ -129,6 +155,126 @@ def test_a_budget_of_zero_leaves_the_descriptions_out(catalog: Catalog) -> None:
 
     assert scope.descriptions == ()
     assert scope.documents == ("manuals/a.pdf",)
+
+
+def test_a_scope_carries_the_outline_of_its_documents(catalog: Catalog) -> None:
+    """The headings are paired with their documents, in the same order.
+
+    The outline is written here and not at the far end, so that a value of a
+    scope holds text rather than a tree.
+    """
+    indexed(catalog, "manuals/a.pdf")
+    indexed(catalog, "reports/c.pdf")
+    structured(catalog, "manuals/a.pdf", "Uno", "Due")
+    structured(catalog, "reports/c.pdf", "Tre")
+
+    scope = resolve_scope(catalog, config=make_settings())
+
+    assert scope.outlines == (
+        ("manuals/a.pdf", "Uno — p.1\nDue — p.1"),
+        ("reports/c.pdf", "Tre — p.1"),
+    )
+
+
+def test_outlines_stop_at_the_budget_they_are_given(catalog: Catalog) -> None:
+    """The outlines are taken until the budget runs out.
+
+    The first one fits in what is left. Adding the second would pass the
+    budget, so the walk ends, while both documents stay in the scope.
+    """
+    indexed(catalog, "manuals/a.pdf")
+    indexed(catalog, "reports/c.pdf")
+    structured(catalog, "manuals/a.pdf", "Uno")
+    structured(catalog, "reports/c.pdf", "Due")
+
+    scope = resolve_scope(catalog, config=make_settings(outline_budget_chars=9))
+
+    assert scope.outlines == (("manuals/a.pdf", "Uno — p.1"),)
+    assert scope.documents == ("manuals/a.pdf", "reports/c.pdf")
+
+
+def test_an_outline_that_does_not_fit_whole_is_left_out_rather_than_cut(
+    catalog: Catalog,
+) -> None:
+    """No part of an outline is written, because half a list reads as a whole one.
+
+    Whoever reads a chapter list cut short cannot tell it from a document that
+    has fewer chapters, so the document is left out instead.
+    """
+    indexed(catalog, "manuals/a.pdf")
+    indexed(catalog, "reports/c.pdf")
+    structured(catalog, "manuals/a.pdf", "Uno")
+    structured(catalog, "reports/c.pdf", "Due")
+
+    scope = resolve_scope(catalog, config=make_settings(outline_budget_chars=17))
+    written = "".join(text for _, text in scope.outlines)
+
+    assert written == "Uno — p.1"
+    assert "Due" not in written
+
+
+def test_a_budget_of_zero_leaves_the_outlines_out(catalog: Catalog) -> None:
+    indexed(catalog, "manuals/a.pdf")
+    structured(catalog, "manuals/a.pdf", "Uno")
+
+    scope = resolve_scope(catalog, config=make_settings(outline_budget_chars=0))
+
+    assert scope.outlines == ()
+    assert scope.documents == ("manuals/a.pdf",)
+
+
+def test_a_document_with_no_tree_carries_no_outline(catalog: Catalog) -> None:
+    """A document that was never read for its structure is still in the scope."""
+    indexed(catalog, "manuals/a.pdf")
+    indexed(catalog, "reports/c.pdf")
+    structured(catalog, "reports/c.pdf", "Tre")
+
+    scope = resolve_scope(catalog, config=make_settings())
+
+    assert scope.outlines == (("reports/c.pdf", "Tre — p.1"),)
+    assert scope.documents == ("manuals/a.pdf", "reports/c.pdf")
+
+
+def test_a_catalog_with_no_structure_table_carries_no_outline(
+    catalog: Catalog, db_path: Path
+) -> None:
+    """A catalog written before the tree existed answers with nothing."""
+    indexed(catalog, "manuals/a.pdf")
+    structured(catalog, "manuals/a.pdf", "Uno")
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE structure")
+
+    scope = resolve_scope(Catalog(db_path), config=make_settings())
+
+    assert scope.outlines == ()
+    assert scope.documents == ("manuals/a.pdf",)
+
+
+def test_a_one_document_scope_carries_the_outline_of_that_document(
+    catalog: Catalog,
+) -> None:
+    indexed(catalog, "manuals/a.pdf", chunks=1)
+    structured(catalog, "manuals/a.pdf", "Uno")
+
+    scope = resolve_scope(
+        catalog, config=make_settings(), document="manuals/a.pdf"
+    )
+
+    assert scope.outlines == (("manuals/a.pdf", "Uno — p.1"),)
+
+
+def test_a_category_scope_carries_the_outlines_of_its_documents(
+    catalog: Catalog,
+) -> None:
+    indexed(catalog, "manuals/a.pdf")
+    indexed(catalog, "reports/c.pdf")
+    structured(catalog, "manuals/a.pdf", "Uno")
+    structured(catalog, "reports/c.pdf", "Tre")
+
+    scope = resolve_scope(catalog, config=make_settings(), category="manuals")
+
+    assert scope.outlines == (("manuals/a.pdf", "Uno — p.1"),)
 
 
 def test_a_category_scope_carries_the_descriptions_of_its_documents(

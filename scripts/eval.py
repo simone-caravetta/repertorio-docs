@@ -153,6 +153,7 @@ def evaluate(
         context_k=config.retrieval_k,
         in_scope=scope.documents,
         descriptions=dict(scope.descriptions),
+        outlines=dict(scope.outlines),
         chat_model=model if writes else None,
         judge_model=(judge_model or model) if judge else None,
         grade_model=(grade_model or model) if grade else None,

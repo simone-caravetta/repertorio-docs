@@ -61,6 +61,7 @@ async def run_chat(
             retriever=build_scoped_retriever(scope),
             in_scope=scope.documents,
             descriptions=dict(scope.descriptions),
+            outlines=dict(scope.outlines),
         )
     except (LookupError, RuntimeError) as exc:
         # A scope that cannot be resolved stops the console before the first

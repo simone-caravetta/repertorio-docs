@@ -79,8 +79,13 @@ You are given a question and the material a search returned for it. Decide
 whether that material holds enough to answer the question.
 
 The material opens with the documents the search ran over and, under each,
-what the catalogue says about it. Under that come the passages themselves,
-each labelled with its source and its page. Both are part of the material.
+what the catalogue says about it: a description, and the headings of the
+document with the pages they cover. Under that come the passages themselves,
+each labelled with its source and its page. Both are part of the material. A
+question about the shape of a document rather than about what it says — how
+many parts it has, which part holds something, what comes before or after a
+passage — is answered by those headings when they name it, even when no passage
+states it.
 
 Answer false when the passages are about something else, when they are too
 general to settle the question, or when the question asks for a fact that

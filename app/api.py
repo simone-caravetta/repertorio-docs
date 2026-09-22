@@ -153,9 +153,11 @@ def create_app(
             retriever=make_retriever(scope),
             checkpointer=saver,
             # What the answer is told about the library, which is the documents
-            # that were searched and what the catalog says about each of them.
+            # that were searched, what the catalog says about each of them and
+            # the headings each one holds.
             in_scope=scope.documents,
             descriptions=dict(scope.descriptions),
+            outlines=dict(scope.outlines),
             # Read from the config the app was built with, so that a server
             # started with GRADE off is a server that answers every question.
             grade=grading.enabled(config),

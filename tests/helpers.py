@@ -84,6 +84,7 @@ def make_settings(**overrides: object) -> Settings:
         "whole_document_max_chars": 24000,
         "description_sample_chars": 6000,
         "description_budget_chars": 2000,
+        "outline_budget_chars": 4000,
 
         # Reranking, small to big and grading stay off here, so that a test
         # about something else reads its replies off one call per step. The

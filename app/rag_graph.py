@@ -97,8 +97,9 @@ New question:
 ])
 
 # Used by the third node. It writes the answer from the context alone, and it is
-# told that the context also carries what the catalog says about the documents,
-# which is what makes a question about the library itself answerable.
+# told that the context also carries what the catalog says about the documents
+# and the headings of each, which is what makes a question about the library
+# itself answerable.
 answer_prompt = ChatPromptTemplate.from_messages([
     (
         "system",
@@ -110,12 +111,16 @@ own knowledge. Never invent facts, figures, names, procedures or rules that are
 not in the context.
 
 The context opens with the documents the search was run over and, under each,
-what the catalogue says about it. Both are part of the context. Answer from them
-when the question is about the library itself — which documents there are, what
-each one contains — and from the passages when it is about what a document says.
-A document the search returned no passage of is still a document you can say
-something about, when its description is there; say that the description is what
-you are answering from, and do not present it as a passage.
+what the catalogue says about it: a description, and the headings of the
+document with the pages they cover. Both are part of the context. Answer from
+them when the question is about the library itself — which documents there are,
+what each one contains, which part of a document holds something, and what comes
+before or after a passage — and from the passages when it is about what a
+document says. A document the search returned no passage of is still a document
+you can say something about, when its description or its headings are there; say
+that this is what you are answering from, and do not present it as a passage.
+When a document's headings are not listed, the catalogue has none for it: say
+that rather than saying what the document holds.
 
 Write the answer in the language of the question, not the language of the
 passages: a question asked in English gets an English answer even when every
@@ -174,12 +179,14 @@ def format_context(
     *,
     in_scope: Sequence[str] | None = None,
     descriptions: Mapping[str, str] | None = None,
+    outlines: Mapping[str, str] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Build the context the answer is written from.
 
     The context opens with the documents the search was over and what the
-    catalog says about each. Under that come the passages, each one labelled
-    with its source and its page.
+    catalog says about each: the description, and under it the headings of the
+    document with the pages they cover. Under that come the passages, each one
+    labelled with its source and its page.
 
     Returns the context and a row per passage, which is what the page shows as
     the sources of an answer.
@@ -191,8 +198,15 @@ def format_context(
         lines = [f"Documents searched: {len(in_scope)} — " + ", ".join(in_scope)]
         for name in in_scope:
             said = (descriptions or {}).get(name)
+            tree = (outlines or {}).get(name)
             if said:
                 lines.append(f"{name} — {said}")
+            elif tree:
+                # An outline with no description still has to say which document
+                # it belongs to, or the lines under it belong to nothing.
+                lines.append(name)
+            if tree:
+                lines.extend(f"  {line}" for line in tree.splitlines())
         context_parts.append("\n".join(lines))
 
     for doc in documents:
@@ -268,6 +282,7 @@ def build_graph(
     checkpointer: BaseCheckpointSaver | None = None,
     in_scope: Sequence[str] | None = None,
     descriptions: Mapping[str, str] | None = None,
+    outlines: Mapping[str, str] | None = None,
     grade: bool | None = None,
     attempts: int | None = None,
 ) -> CompiledStateGraph:
@@ -275,9 +290,10 @@ def build_graph(
 
     `chat_model` writes the rewritten question and the answer, and grades the
     material when grading is on. The retriever falls back to the one built from
-    the settings. `in_scope` names the documents the search runs over and
-    `descriptions` holds what the catalog says about them. The checkpointer
-    stores the conversation between turns and defaults to one kept in memory.
+    the settings. `in_scope` names the documents the search runs over,
+    `descriptions` holds what the catalog says about them and `outlines` the
+    headings of each one with the pages they cover. The checkpointer stores the
+    conversation between turns and defaults to one kept in memory.
 
     `grade` says whether the material is judged before an answer is written, and
     `attempts` how many searches one question may take. Both fall back to the
@@ -318,7 +334,10 @@ def build_graph(
     async def retrieve(state: RAGState) -> dict[str, Any]:
         documents = await (retriever or get_retriever()).ainvoke(state["search_query"])
         context, source_rows = format_context(
-            documents, in_scope=in_scope, descriptions=descriptions
+            documents,
+            in_scope=in_scope,
+            descriptions=descriptions,
+            outlines=outlines,
         )
 
         return {

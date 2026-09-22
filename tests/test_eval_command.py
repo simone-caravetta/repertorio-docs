@@ -21,7 +21,7 @@ from app.config import Settings
 from app.evals import NDCG_CUTOFF, EvalReport, Question, QuestionResult, run_evals
 from app.grading import Verdict
 from app.lifecycle import sync_documents
-from app.scope import build_scoped_retriever
+from app.scope import Scope, build_scoped_retriever
 from scripts.eval import evaluate, main, parse_args, print_report
 from tests.helpers import (
     EMBEDDING_MODEL,
@@ -644,6 +644,49 @@ def test_what_was_found_is_read_over_what_the_console_shows(
 
     assert read == [5, NDCG_CUTOFF * 2]
     assert len(called) == 2
+
+
+def test_the_run_hands_the_graph_the_outlines_of_its_scope(
+    library: FakeVectorStore,
+    documents_dir: Path,
+    db_path: Path,
+    question_set: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured: Callable[..., Settings],
+) -> None:
+    """What the scope carries is what the run passes on, headings included.
+
+    A run that dropped them would measure a context without the outlines, which
+    is a different pipeline from the one the console builds.
+    """
+    given: dict[str, object] = {}
+
+    def watched(questions: object, **kwargs: object) -> object:
+        given.update(kwargs)
+        return EvalReport(results=[])
+
+    monkeypatch.setattr("scripts.eval.run_evals", watched)
+    monkeypatch.setattr(
+        "scripts.eval.resolve_scope",
+        lambda *args, **kwargs: Scope(
+            sources=(MANUAL,),
+            label="document",
+            documents=(MANUAL,),
+            descriptions=((MANUAL, "A manual about the thing."),),
+            outlines=((MANUAL, "Introducción — pp.6-12"),),
+        ),
+    )
+    configured(rerank="off", retrieval_k=5)
+
+    evaluate(
+        questions_path=question_set,
+        documents_dir=documents_dir,
+        db_path=db_path,
+        grade=False,
+    )
+
+    assert given["outlines"] == {MANUAL: "Introducción — pp.6-12"}
+    assert given["descriptions"] == {MANUAL: "A manual about the thing."}
 
 
 def test_a_document_read_whole_is_read_whole_by_the_numbers_too(

@@ -9,7 +9,7 @@ Nothing here calls a model, so nothing here can invent a section a document
 does not have.
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -25,6 +25,10 @@ _ORDER = {SECTION: 0, TABLE: 1, FIGURE: 2}
 # a tree can be read and one table told from another.
 
 _LABEL_CHARS = 60
+
+# What a nested heading is indented by, under the one that holds it.
+
+INDENT = "  "
 
 
 def of(reading: pdf.Reading) -> list[Node]:
@@ -125,6 +129,71 @@ def counts(nodes: Iterable[Node]) -> tuple[int, int, int]:
         kinds.count(TABLE),
         kinds.count(FIGURE),
     )
+
+
+def pages_label(first: int, last: int) -> str:
+    """The pages a node covers, the way a person writes them."""
+    return f"p.{first}" if first == last else f"pp.{first}-{last}"
+
+
+def outline(nodes: Iterable[Node]) -> str:
+    """The sections of a tree, one line each, nested under what holds them.
+
+    A line carries the heading and the pages it covers, which is what makes the
+    tree readable by someone who has not seen the document: a model answering a
+    question about the shape of a document rather than about what it says.
+
+    The nesting is read from `parent` and not from `level`. A level is where
+    the reader found the heading, by the size of the text or by the outline of
+    the file, and the two disagree on a document whose first heading is set
+    larger than the ones after it. `parent` is the tree's own statement of what
+    holds what.
+
+    A table has a line and is marked as one, because what names it is its first
+    row and that row reads like a heading. A figure is not named and so has no
+    line, which is the whole of the rule: a node with no title is not a line.
+
+    A document with no headings answers with an empty string, and so does an
+    empty tree.
+    """
+
+    kept = [node for node in nodes if node.title]
+    if not kept:
+        return ""
+
+    by_ordinal = {node.ordinal: node for node in kept}
+
+    return "\n".join(
+        f"{INDENT * _depth(node, by_ordinal)}{_line(node)}" for node in kept
+    )
+
+
+def _line(node: Node) -> str:
+    """One node as a line: what it is called, and the pages it covers."""
+    named = f"table {node.title}" if node.kind == TABLE else (node.title or "")
+
+    return f"{named} — {pages_label(node.page, node.end_page)}"
+
+
+def _depth(node: Node, by_ordinal: Mapping[int, Node]) -> int:
+    """How deep a node sits, as the number of sections that hold it.
+
+    A parent that is not among the nodes, or a chain that leads back to itself,
+    ends the walk rather than raising or hanging: a tree read back from the
+    catalog is data, and a renderer that stops on it is worse than one that
+    indents it wrongly.
+    """
+
+    depth = 0
+    seen = {node.ordinal}
+    parent = node.parent
+
+    while parent is not None and parent in by_ordinal and parent not in seen:
+        seen.add(parent)
+        depth += 1
+        parent = by_ordinal[parent].parent
+
+    return depth
 
 
 @dataclass

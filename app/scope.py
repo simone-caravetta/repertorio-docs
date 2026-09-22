@@ -1,8 +1,9 @@
 """The set of documents a question is asked of.
 
 A scope can be the whole library, one category, one document or a list of
-documents. Besides the sources it carries the label a console prints and the
-descriptions that go into the context of the answer.
+documents. Besides the sources it carries the label a console prints and the two
+things that go into the context of the answer: what the catalog says about each
+document, and the headings of each one.
 
 `resolve_scope` builds one from the arguments a command was given, and
 `build_scoped_retriever` turns it into the retriever that searches it.
@@ -18,6 +19,7 @@ from langchain_core.retrievers import BaseRetriever
 
 from app.catalog import Catalog, DocumentRecord, normalise_category
 from app.config import Settings
+from app.structure import outline
 from app.vectorstore import WholeDocumentRetriever, build_retriever, get_vectorstore
 
 
@@ -27,13 +29,18 @@ class Scope:
 
     `sources` holds the document paths, and is None when the scope is the whole
     library. `documents` holds the same paths in the order they were given.
-    `descriptions` pairs a path with the description the catalog wrote for it.
+    `descriptions` pairs a path with the description the catalog wrote for it,
+    and `outlines` pairs a path with the headings of that document, already
+    rendered and already within the budget. Both are text by the time they get
+    here: the tree is read from the catalog once per scope rather than once per
+    question, and a value compared for equality carries a string and not a tree.
     """
 
     sources: tuple[str, ...] | None
     label: str
     documents: tuple[str, ...] = ()
     descriptions: tuple[tuple[str, str], ...] = ()
+    outlines: tuple[tuple[str, str], ...] = ()
     whole_document: bool = False
     chunks: int | None = None
 
@@ -58,6 +65,7 @@ def whole_library(catalog: Catalog, *, config: Settings) -> Scope:
         descriptions=_described(
             catalog, documents, budget=config.description_budget_chars
         ),
+        outlines=_outlined(catalog, documents, budget=config.outline_budget_chars),
     )
 
 
@@ -87,6 +95,36 @@ def _described(
             break
         spent += len(description)
         written.append((path, description))
+
+    return tuple(written)
+
+
+def _outlined(
+    catalog: Catalog, documents: tuple[str, ...], *, budget: int
+) -> tuple[tuple[str, str], ...]:
+    """The outlines to put in the context, within a character budget.
+
+    Documents are taken in the order given until the budget runs out, which is
+    how the descriptions are spent. The first outline that does not fit ends the
+    walk, and no part of one is ever written: a list of chapters cut short reads
+    as a document with fewer chapters, and whoever is reading it cannot tell the
+    two apart. A document the reader found no heading in carries no outline and
+    is passed over without spending anything.
+    """
+    if budget <= 0 or not documents:
+        return ()
+
+    written: list[tuple[str, str]] = []
+    spent = 0
+
+    for path in documents:
+        tree = outline(catalog.structure(path))
+        if not tree:
+            continue
+        if spent + len(tree) > budget:
+            break
+        spent += len(tree)
+        written.append((path, tree))
 
     return tuple(written)
 
@@ -186,6 +224,9 @@ def resolve_scope(
             descriptions=_described(
                 catalog, sources, budget=config.description_budget_chars
             ),
+            outlines=_outlined(
+                catalog, sources, budget=config.outline_budget_chars
+            ),
         )
 
     return whole_library(catalog, config=config)
@@ -229,6 +270,7 @@ def _category_scope(catalog: Catalog, name: str | None, *, config: Settings) -> 
         descriptions=_described(
             catalog, sources, budget=config.description_budget_chars
         ),
+        outlines=_outlined(catalog, sources, budget=config.outline_budget_chars),
     )
 
 
@@ -258,6 +300,9 @@ def _one_document_scope(
         documents=(record.path,),
         descriptions=_described(
             catalog, (record.path,), budget=config.description_budget_chars
+        ),
+        outlines=_outlined(
+            catalog, (record.path,), budget=config.outline_budget_chars
         ),
         whole_document=whole,
         chunks=record.chunk_count if whole else None,

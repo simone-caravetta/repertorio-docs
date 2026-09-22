@@ -32,7 +32,7 @@ Answering a question is a graph of three steps in `app/rag_graph.py`, built with
 1. The question is rewritten together with the conversation so far, so a follow-up becomes a
    question that stands on its own.
 2. That question is searched, and the passages it returns go into a context together with the list
-   of documents that were searched and the description of each.
+   of documents that were searched, the description of each, and the headings each one holds.
 3. The context goes to the chat model, which writes the answer.
 
 The chat model is `ChatOpenAI` from `langchain-openai`, pointed at DeepSeek by default and at any
@@ -152,9 +152,24 @@ python -m scripts.structure --dry-run              # the tree, and nothing writt
 ```
 
 It opens no vector store and calls no model, so it is safe on a library that is already answering
-questions, and it changes nothing about how one is answered. The sync writes the structure as it
-indexes, so a document indexed from now on has one without a second command. A document that cannot
-be read a second time is still indexed and answerable, and the line for it says so.
+questions. The sync writes the structure as it indexes, so a document indexed from now on has one
+without a second command. A document that cannot be read a second time is still indexed and
+answerable, and the line for it says so.
+
+The tree also reaches the answer. The outline of each document in scope — its sections, one line
+each, with the pages they cover, nested under the section that holds them — is written into the
+context beside the description, so a question about the shape of a document is answered from the
+tree rather than guessed from the five passages the search returned. `OUTLINE_BUDGET_CHARS` is what
+that costs, 4000 by default. A document whose outline does not fit whole is left out rather than cut
+short, because half a chapter list reads as a document with fewer chapters, and 0 leaves the
+outlines out of the context altogether.
+
+Nothing about the search changes, so the retrieval numbers below are the same with the outlines on
+and off. Measured on the library this project was built against, a book that prints its own table of
+contents already gives the search most of its shape, since that page comes back like any other; what
+the outline adds there is the page numbering, because the pages a source line cites are the PDF's own
+and not the printed ones. On a document with no such page of its own, the outline is the only place
+its shape is written down.
 
 ## Web interface
 
@@ -191,6 +206,7 @@ Every setting is read in `app/config.py` and has a default, so `.env` only needs
 | `WHOLE_DOCUMENT_MAX_CHARS` | `24000` | above this, a single document is searched by similarity |
 | `DESCRIPTION_SAMPLE_CHARS` | `6000` | how much of a document is read to describe it |
 | `DESCRIPTION_BUDGET_CHARS` | `2000` | how much of the catalog goes into one answer |
+| `OUTLINE_BUDGET_CHARS` | `4000` | how much of the section outlines goes into one answer |
 | `RERANK` | `off` | whether a cross-encoder reorders what the search found |
 | `SMALL_TO_BIG` | `off` | `page` gives the model the page each passage came from |
 | `GRADE` | `on` | whether the material is judged before an answer is written |

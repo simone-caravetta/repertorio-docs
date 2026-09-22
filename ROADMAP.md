@@ -422,6 +422,48 @@ expensive one only if the measurements justify it.
       half-true premise the hybrid search ran into, and the reason to check what a layer finds
       before building a consumer on it. Nothing reads the tree yet: the section-scoped answer
       is the next item.
+- [x] The answer knows the sections. The outline of each document in scope — its sections, one
+      line each, nested under the section that holds them, with the pages each covers — goes
+      into the context beside the descriptions, so a question about the shape of a document is
+      answered from the stored tree. It is read and rendered once per scope in `app/scope.py`,
+      so the graph still opens no catalog, and `outline()` in `app/structure.py` turns the
+      stored nodes into text. `OUTLINE_BUDGET_CHARS` (4000) is what it costs, spent the way
+      `DESCRIPTION_BUDGET_CHARS` is: documents are taken while the whole of each outline fits,
+      and the first that does not fit ends the walk, because half a chapter list reads as a
+      document with fewer chapters and a model cannot tell the two apart. Both real documents
+      need 395 characters together, so the budget never bites there; on the 40-document mock it
+      takes 23 of them. Nothing about the search changed, which was itself the regression
+      check, and it holds: the mock's `--no-grade` row is identical to the digit with the
+      outlines off and on, and the private set stays at 15/15 documents and MRR 1.00.
+      The other reading of this item — expanding a retrieved chunk to the section it falls
+      under, the way `SMALL_TO_BIG=page` expands it to its page — was measured and dropped. The
+      reader already cuts chunks at heading starts, so on the mock (6 chunks and 6 sections per
+      document) and on the CV (8 and 6) the section is the chunk itself, and on the book the 7
+      sections over 298 chunks would hand the model about 36,000 characters against a
+      `WHOLE_DOCUMENT_MAX_CHARS` of 24,000. The page was the right unit in Phase 6 and the tree
+      does not change that.
+      The measurement is a partial refutation. On the private set, `--no-grade --answers` with
+      the outline against the same run with `OUTLINE_BUDGET_CHARS=0`: 15 of the 21 answers as
+      expected against 13, with all 11 content questions right in both runs. The two that moved
+      are the two that ask for the pages of a chapter, and the reason is worth keeping: the book
+      prints its own table of contents on page 5, that page is a chunk the search returns, and
+      it numbers the chapters 7, 15, 35, 49, 99 and 109 while the PDF's own page numbers — the
+      ones every source line cites — are 6, 13, 32, 45, 94 and 104. So the two questions about
+      the order of the chapters are answered correctly with the outline off as well, from that
+      page: the shape is in the text, and only the numbering is not. A book without a printed
+      index, or a question whose answer is a page the system itself cites, is where the outline
+      earns its budget; on a book that carries its own, what it adds is the numbering. That is
+      the same half-true premise the figure half of the tree and the hybrid search ran into, and
+      it is the reason to measure a layer before building a consumer on it.
+      What is still open is the graded and judged pass over that same set, so whether the grader
+      accepts the material of a structural question is not known, and with it whether the retry
+      spends what the outline adds. `GRADE=on` is the default path, so that is the first thing to
+      run on a set that has structural questions in it.
+      Two traps for whoever measures this next. `data/catalog.sqlite3` is the catalog that holds
+      the tree — the chroma one has no `structure` table and would need
+      `python -m scripts.structure` over it first, which is safe, no store and no model. And the
+      two catalogs chunk the same book differently, so a private-set number has to name the
+      store it came from or it is not comparable with the ones above.
 - [ ] Reference graph: the explicit cross-references ("see section 4.2", "as described in
       the annex", "cfr. art. 5"), extracted by pattern with an LLM fallback for the
       ambiguous ones and stored as edges between parts of documents. Today a section

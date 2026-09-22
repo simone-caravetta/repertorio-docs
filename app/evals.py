@@ -358,6 +358,7 @@ def run_evals(
     context_k: int | None = None,
     in_scope: Sequence[str] | None = None,
     descriptions: Mapping[str, str] | None = None,
+    outlines: Mapping[str, str] | None = None,
     chat_model: BaseChatModel | None = None,
     judge_model: BaseChatModel | None = None,
     grade_model: BaseChatModel | None = None,
@@ -374,8 +375,9 @@ def run_evals(
     matters when a reranker hands back more passages than the retriever was
     asked for, since those extras were never read by anyone. `in_scope` works
     as it does in a chat: a question about a document outside it is skipped.
-    `descriptions` is the catalog text for the documents in scope, and it goes
-    into the context the answer is written from.
+    `descriptions` is the catalog text for the documents in scope, and
+    `outlines` the headings of those documents, and both go into the context the
+    answer is written from, as they do in a chat.
 
     `context_k` limits the context the answer is written from, and the material
     the grader reads, to the first N passages. A run that leaves it out gives
@@ -406,6 +408,7 @@ def run_evals(
                 context_k=context_k,
                 in_scope=in_scope,
                 descriptions=descriptions,
+                outlines=outlines,
                 chat_model=chat_model,
                 judge_model=judge_model,
                 grade_model=grade_model,
@@ -444,6 +447,7 @@ def _run_one(
     context_k: int | None,
     in_scope: Sequence[str] | None,
     descriptions: Mapping[str, str] | None,
+    outlines: Mapping[str, str] | None,
     chat_model: BaseChatModel | None,
     judge_model: BaseChatModel | None,
     grade_model: BaseChatModel | None,
@@ -457,7 +461,10 @@ def _run_one(
         return QuestionResult(question=question, error=str(exc))
 
     context, sources = format_context(
-        _material(passages, context_k), in_scope=in_scope, descriptions=descriptions
+        _material(passages, context_k),
+        in_scope=in_scope,
+        descriptions=descriptions,
+        outlines=outlines,
     )
 
     # The ranking is measured over the passages a chat would have read, which
@@ -512,7 +519,10 @@ def _run_one(
             return result
 
         context, sources = format_context(
-            _material(passages, context_k), in_scope=in_scope, descriptions=descriptions
+            _material(passages, context_k),
+            in_scope=in_scope,
+            descriptions=descriptions,
+            outlines=outlines,
         )
         result.sources = sources
         result.searches += 1

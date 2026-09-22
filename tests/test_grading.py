@@ -175,6 +175,22 @@ def test_the_model_is_told_that_a_rule_settles_the_case_it_leaves_out():
     assert "whether it settles it by covering the case or by leaving it out" in asked
 
 
+def test_the_model_is_told_that_the_headings_answer_a_structural_question():
+    """A question about the shape of a document is answered by its headings.
+
+    Without this the grader turns a question away that the material does hold
+    the answer to, and the retry spends what the outline was added for.
+    """
+
+    model = FakeChatModel(replies=[said()])
+
+    grade(model, "q", "material")
+
+    asked = " ".join(model.prompts[0][0].content.split())
+    assert "A question about the shape of a document" in asked
+    assert "is answered by those headings when they name it" in asked
+
+
 def test_the_model_is_told_which_language_the_reason_is_written_in():
     """The reason reaches the reader, so it is written in the question's language."""
 

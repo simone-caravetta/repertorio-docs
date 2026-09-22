@@ -388,6 +388,31 @@ def test_the_answer_is_written_from_the_passages_that_were_found() -> None:
     assert "Prima?" in asked
 
 
+def test_the_eval_writes_the_context_with_the_outlines_of_its_scope() -> None:
+    """A run measures the context a chat gives the model, headings included.
+
+    A run that leaves them out measures a pipeline shorter than the one users
+    talk to, which is the same reason `context_k` is passed at all.
+    """
+
+    retriever = Retriever({"Prima?": [passage(MANUAL, 4, "the warranty is two years")]})
+    model = FakeChatModel(replies=["Two years."])
+
+    run_evals(
+        [question(question="Prima?")],
+        retriever=retriever,
+        in_scope=[MANUAL],
+        descriptions={MANUAL: "A manual about the thing."},
+        outlines={MANUAL: "Introducción — pp.6-12"},
+        chat_model=model,
+    )
+
+    asked = model.prompts[0][1].content
+
+    assert "A manual about the thing." in asked
+    assert "Introducción — pp.6-12" in asked
+
+
 def test_a_run_can_give_the_model_as_many_passages_as_a_chat_does() -> None:
     """The context is cut to what the console hands over, not the whole search.
 

@@ -44,6 +44,7 @@ def make_graph(
     documents: list[Document] | None = None,
     in_scope: tuple[str, ...] | None = None,
     descriptions: dict[str, str] | None = None,
+    outlines: dict[str, str] | None = None,
     grade: bool = False,
     attempts: int | None = None,
 ) -> tuple[Any, FakeChatModel, FakeRetriever]:
@@ -61,6 +62,7 @@ def make_graph(
         retriever=retriever,
         in_scope=in_scope,
         descriptions=descriptions,
+        outlines=outlines,
         grade=grade,
         attempts=attempts,
     )
@@ -294,6 +296,85 @@ def test_a_document_nothing_is_written_about_is_named_and_no_more():
     )
 
     assert context.startswith("Documents searched: 1 — manuals/manual.pdf\n\n")
+
+
+def test_the_context_carries_the_sections_of_the_documents_searched():
+    """The headings of a document are written under it, indented as a tree.
+
+    The two spaces the context adds put the whole outline inside the block it
+    belongs to, and the outline's own indent nests within that.
+    """
+
+    context, _ = format_context(
+        [make_document()],
+        in_scope=("manuals/manual.pdf", "reports/report.pdf"),
+        descriptions={"manuals/manual.pdf": "A manual about the thing."},
+        outlines={
+            "manuals/manual.pdf": (
+                "Introducción — pp.6-12\n  Los monumentos — pp.45-93"
+            ),
+            "reports/report.pdf": "Last year — p.1",
+        },
+    )
+
+    assert context.startswith(
+        "Documents searched: 2 — manuals/manual.pdf, reports/report.pdf\n"
+        "manuals/manual.pdf — A manual about the thing.\n"
+        "  Introducción — pp.6-12\n"
+        "    Los monumentos — pp.45-93\n"
+        "reports/report.pdf\n"
+        "  Last year — p.1\n\n"
+        "[Source: manuals/manual.pdf | Page: 12]\nThe thing is explained here."
+    )
+
+
+def test_a_document_with_headings_and_no_description_is_still_named():
+    """An outline with nothing above it says which document it belongs to."""
+
+    context, _ = format_context(
+        [make_document()],
+        in_scope=("manuals/manual.pdf",),
+        outlines={"manuals/manual.pdf": "Introducción — pp.6-12"},
+    )
+
+    assert context.startswith(
+        "Documents searched: 1 — manuals/manual.pdf\n"
+        "manuals/manual.pdf\n"
+        "  Introducción — pp.6-12\n\n"
+    )
+
+
+def test_a_document_with_headings_that_were_left_out_is_named_and_no_more():
+    """A document whose outline did not fit the budget reads as it did before."""
+
+    context, _ = format_context(
+        [make_document()],
+        in_scope=("manuals/manual.pdf",),
+        descriptions={"manuals/manual.pdf": "A manual about the thing."},
+        outlines={"reports/report.pdf": "Last year — p.1"},
+    )
+
+    assert context.startswith(
+        "Documents searched: 1 — manuals/manual.pdf\n"
+        "manuals/manual.pdf — A manual about the thing.\n\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_answer_is_written_knowing_the_sections_of_the_documents():
+    """The prompt carries the headings, and says what they are for."""
+
+    graph, model, _ = make_graph(
+        ["a standalone question", "the answer"],
+        in_scope=("manuals/manual.pdf",),
+        outlines={"manuals/manual.pdf": "Introducción — pp.6-12"},
+    )
+
+    await ask(graph, "which chapters does it have?")
+
+    answer_prompt = str(model.prompts[-1])
+    assert "Introducción — pp.6-12" in answer_prompt
+    assert "the headings of the" in answer_prompt
 
 
 @pytest.mark.asyncio

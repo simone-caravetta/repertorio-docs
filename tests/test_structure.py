@@ -90,6 +90,28 @@ def repeated(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def odd(tmp_path: Path) -> Path:
+    """A document whose first heading is set smaller than the one after it.
+
+    The size decides the level, so the first line is the deeper of the two,
+    while neither line sits inside the other: the level and the parent
+    disagree about the shape of this page.
+    """
+
+    return make_structured_pdf(
+        tmp_path / "odd.pdf",
+        pages=[
+            [
+                Line("Piccolo", size=14),
+                Line(BODY),
+                Line("Grande", size=22),
+                Line(BODY),
+            ]
+        ],
+    )
+
+
+@pytest.fixture
 def sized(tmp_path: Path) -> Path:
     """A document with no outline, whose two headings come from type size."""
 
@@ -249,3 +271,104 @@ def test_a_document_read_twice_gives_the_same_tree(book: Path) -> None:
     """Nothing in the tree is decided anywhere but in the reading."""
 
     assert tree(book) == tree(book)
+
+
+def a_node(ordinal: int, title: str, parent: int | None) -> structure.Node:
+    """A section built by hand, for shapes a reading rarely produces."""
+
+    return structure.Node(
+        ordinal=ordinal,
+        kind=structure.SECTION,
+        title=title,
+        level=1,
+        parent=parent,
+        page=1,
+        end_page=1,
+        start=0,
+        end=10,
+    )
+
+
+def lines_of(path: Path) -> list[str]:
+    return structure.outline(tree(path)).splitlines()
+
+
+def test_the_outline_names_each_section_and_the_pages_it_covers(book: Path) -> None:
+    """A line is the heading and the pages it runs over.
+
+    A section that stays on one page is a page, and one that runs onto the
+    next is a range. The table sits under the section that holds it, which is
+    Care and not the whole document.
+    """
+
+    assert lines_of(book) == [
+        "Handbook — pp.1-2",
+        "  Care — pp.1-2",
+        "    table Part Hours — p.1",
+        "  Parts — p.2",
+    ]
+
+
+def test_a_figure_has_no_line_and_a_table_is_named_as_one(figures: Path) -> None:
+    """What has no name has no line, and a table says that it is a table."""
+
+    assert lines_of(figures) == ["Primo — p.1", "  Secondo — p.1"]
+
+
+def test_a_document_with_no_headings_writes_what_is_named_in_it(
+    flat: Path,
+) -> None:
+    """A table nothing holds is still a line, at the head of the outline."""
+
+    assert lines_of(flat) == ["table A B — p.1"]
+
+
+def test_the_indent_follows_the_parent_and_not_the_level(odd: Path) -> None:
+    """Two headings that hold nothing are two lines at one indent.
+
+    The type size sets the levels here, so the first line of the document is
+    the deeper of the two while neither sits inside the other. Read from the
+    level, the second line would be written as the parent of the first.
+    """
+
+    nodes = tree(odd)
+
+    assert [node.level for node in nodes] == [2, 1]
+    assert [node.parent for node in nodes] == [None, None]
+    assert structure.outline(nodes).splitlines() == ["Piccolo — p.1", "Grande — p.1"]
+
+
+def test_a_tree_with_nothing_named_has_no_outline() -> None:
+    """An empty tree says nothing, and so does one holding only figures."""
+
+    unnamed = structure.Node(
+        ordinal=0,
+        kind=structure.FIGURE,
+        title=None,
+        level=None,
+        parent=None,
+        page=1,
+        end_page=1,
+        start=0,
+        end=0,
+        bbox=(72.0, 60.0, 172.0, 120.0),
+    )
+
+    assert structure.outline([]) == ""
+    assert structure.outline([unnamed]) == ""
+
+
+def test_a_parent_that_is_not_in_the_tree_does_not_stop_the_outline() -> None:
+    """A parent that names no node is written at the head rather than raising."""
+
+    nodes = [a_node(0, "Uno", parent=99), a_node(1, "Due", parent=0)]
+
+    assert structure.outline(nodes).splitlines() == ["Uno — p.1", "  Due — p.1"]
+
+
+def test_two_nodes_holding_each_other_are_still_written() -> None:
+    """A tree read back from the catalog is data, and a loop is not a hang."""
+
+    nodes = [a_node(0, "Uno", parent=1), a_node(1, "Due", parent=0)]
+
+    assert len(structure.outline(nodes).splitlines()) == 2
