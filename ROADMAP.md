@@ -288,9 +288,13 @@ doubles as the tool that tells whether a local model is good enough for a given 
       differing only in a condition stated in the text, and questions that describe that
       condition in everyday words rather than in the document's own. It is a local instrument
       like the real set, not part of the repository, and it is what made the reranker
-      measurable at all. The baseline over it is 86/90 documents, 86/90 pages, MRR 0.82,
-      nDCG@10 0.83, identical over five runs and with 24 of the 90 questions off rank 1 — a
-      baseline a retrieval change can be measured against, which the real library cannot give.
+      measurable at all. The baseline over it, at the 90 questions it held when this was
+      written, was 86/90 documents, 86/90 pages, MRR 0.82, nDCG@10 0.83, identical over five
+      runs and with 24 of the 90 questions off rank 1 — a baseline a retrieval change can be
+      measured against, which the real library cannot give. The set has grown twice since the
+      first measurement of it, so each item below carries the size it was measured at; at the
+      107 questions it holds now, 97 of which name a document, the baseline is 86/97 documents,
+      MRR 0.76, nDCG@10 0.79.
       Its difficulty is concentrated rather than spread, and that is worth knowing before
       trusting it as a general instrument: of the forty questions that describe a condition,
       every one of the eight about the closed-garage condition is off rank 1, while the other
@@ -312,10 +316,12 @@ doubles as the tool that tells whether a local model is good enough for a given 
       nothing to reorder. On the harder corpus described above it does what it is for: the
       plain search answers 47/50 documents, 47/50 pages, MRR 0.78, nDCG@10 0.77, and reranked
       48/50, 48/50, MRR 0.89, nDCG@10 0.85 — 17 of the 50 questions at a different rank, and
-      the ten control questions, asked in the document's own words, at rank 1 in both. Five
-      runs of the plain pass and three of the reranked one each came out identical line for
-      line, so the corpus moves for a reason rather than from ties. It is
-      not a free win: two documents the plain search had found fell out of the top five while
+      the ten control questions, asked in the document's own words, at rank 1 in both. That
+      pass was over the 50 questions the corpus then held; at the 107 it holds now the same
+      comparison is 94/97 documents against 86/97, MRR 0.90 against 0.76, nDCG@10 0.89 against
+      0.79. Five runs of the plain pass and three of the reranked one each came out identical
+      line for line, so the corpus moves for a reason rather than from ties. It is not a free
+      win: two documents the plain search had found fell out of the top five while
       three it had missed came in, so the hit rate barely moves while the ordering improves. A
       reordering cannot add what was never retrieved, which is what the item below is for. What
       it costs is measured too: about 7 seconds added per question on CPU with six cores busy,

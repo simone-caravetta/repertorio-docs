@@ -245,9 +245,10 @@ RERANK_CANDIDATES=20         # what the search is asked for, of which RETRIEVAL_
 ```
 
 It is off by default because on the library this project was built against the search already put
-the right page first for every question, so there was nothing to reorder. On a corpus built to be
-harder, ten subjects with four near-identical documents each, the reranker improved MRR from 0.82
-to 0.94 and nDCG@10 from 0.83 to 0.91, at about seven seconds per question on a CPU.
+the right page first for every question, so there was nothing to reorder. On the corpus built to be
+harder, ten subjects with four near-identical documents each, it is the larger of the two gains
+measured below: 94 of the 97 documents against 86, with MRR 0.90 against 0.76 and nDCG@10 0.89
+against 0.79, at about seven seconds per question on a CPU.
 
 ## Small to big
 
@@ -280,6 +281,35 @@ which damage the cover includes, and the question is accepted on the first mater
 asked for less often for the same reason, 13 questions instead of 21, and it recovered 1 instead of
 7: there is less wrongly refused material left for a second search to put right. Those are one
 graded pass each, so a second would move a question or two.
+
+## The two together
+
+Both settings are measured over the same 107 questions, 97 of which name a document. The first three
+columns come from a run with the grader off, which calls no model and repeats exactly. The last
+three come from a graded pass each, which is a model reading the material and moves a question or
+two from run to run.
+
+| `RERANK` | `SMALL_TO_BIG` | documents | MRR | nDCG@10 | accepted | refused first | turned away |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `off` | `off` | 86/97 | 0.76 | 0.79 | 92/97 | 21 | 14 |
+| `off` | `page` | 91/97 | 0.77 | 0.83 | 94/97 | 13 | 12 |
+| `on` | `off` | 94/97 | 0.90 | 0.89 | 94/97 | 12 | 12 |
+| `on` | `page` | 96/97 | 0.91 | 0.93 | 94/97 | 13 | 12 |
+
+Accepted counts the questions whose material the grader kept, out of the 97 a document answers;
+refused first is how often it turned the material away before the second search, and turned away is
+the material it still refused once the retry was spent. Each of the two helps, and neither undoes
+the other. The case against them was that they would compete for the same five slots, since the
+reranker can pick two passages of one page and small to big turns those into one item; it did not
+show, and with both on the search finds 96 of the 97 documents. What neither changes is the grader:
+it stays at 94 accepted whatever is on, because it was already nearly right about the material, and
+the refinements change which page the answer is written from and how much of it the model sees.
+Nine of the ten questions no document answers are refused in all four, so the tenth is a false
+positive that none of the three touches.
+
+One thing this table does not cover. Only the first row has been through `--answers` and `--judge`:
+93 answers written, 86 holding the text the set expects, and 89 of 93 accepted by the judge. Whether
+a page-long context helps or dilutes what the model writes is open.
 
 ## Development
 
